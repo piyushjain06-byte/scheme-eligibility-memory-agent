@@ -1,0 +1,160 @@
+[
+  {
+    "name": "Student Education Support Scheme",
+    "description": "DEMO SCHEME. For educational/academic demonstration only. Provides financial assistance to young students from low-income households to support their education.",
+    "department": "Department of Education (Demo)",
+    "government_level": "DEMO",
+    "category": "Education",
+    "benefits": "Annual stipend of ₹15,000 towards tuition and study materials.",
+    "application_url": "https://example.gov.demo/student-education-support",
+    "rule": {
+      "logic": "AND",
+      "conditions": [
+        { "field": "age", "operator": "between", "value": [18, 25] },
+        { "field": "student_status", "operator": "==", "value": true },
+        { "field": "annual_income", "operator": "<=", "value": 250000 }
+      ]
+    }
+  },
+  {
+    "name": "Skill Development Assistance",
+    "description": "DEMO SCHEME. For educational/academic demonstration only. Funds vocational training for unemployed youth to improve job readiness.",
+    "department": "Department of Skill Development (Demo)",
+    "government_level": "DEMO",
+    "category": "Employment",
+    "benefits": "Free vocational training plus a monthly stipend of ₹2,000 during the course.",
+    "application_url": "https://example.gov.demo/skill-development",
+    "rule": {
+      "logic": "AND",
+      "conditions": [
+        { "field": "age", "operator": "between", "value": [18, 35] },
+        { "field": "employment_status", "operator": "==", "value": "unemployed" }
+      ]
+    }
+  },
+  {
+    "name": "Farmer Income Support",
+    "description": "DEMO SCHEME. For educational/academic demonstration only. Direct income support for farmers to help cover input costs.",
+    "department": "Department of Agriculture (Demo)",
+    "government_level": "DEMO",
+    "category": "Agriculture",
+    "benefits": "₹6,000 per year in three equal installments.",
+    "application_url": "https://example.gov.demo/farmer-income-support",
+    "rule": {
+      "logic": "OR",
+      "conditions": [
+        { "field": "farmer_status", "operator": "==", "value": true },
+        { "field": "occupation", "operator": "==", "value": "farmer" }
+      ]
+    }
+  },
+  {
+    "name": "Disability Welfare Assistance",
+    "description": "DEMO SCHEME. For educational/academic demonstration only. Monthly assistance for persons with disabilities.",
+    "department": "Department of Social Justice (Demo)",
+    "government_level": "DEMO",
+    "category": "Welfare",
+    "benefits": "Monthly assistance of ₹1,500 and priority access to assistive devices.",
+    "application_url": "https://example.gov.demo/disability-welfare",
+    "rule": {
+      "logic": "AND",
+      "conditions": [
+        { "field": "disability_status", "operator": "==", "value": true }
+      ]
+    }
+  },
+  {
+    "name": "Women Empowerment Grant",
+    "description": "DEMO SCHEME. For educational/academic demonstration only. Grant to support women starting small businesses or continuing education.",
+    "department": "Department of Women & Child Development (Demo)",
+    "government_level": "DEMO",
+    "category": "Welfare",
+    "benefits": "One-time grant of ₹25,000.",
+    "application_url": "https://example.gov.demo/women-empowerment-grant",
+    "rule": {
+      "logic": "AND",
+      "conditions": [
+        { "field": "gender", "operator": "==", "value": "female" },
+        { "field": "annual_income", "operator": "<=", "value": 300000 }
+      ]
+    }
+  },
+  {
+    "name": "Senior Citizen Pension Scheme",
+    "description": "DEMO SCHEME. For educational/academic demonstration only. Monthly pension for elderly citizens without a regular income.",
+    "department": "Department of Social Justice (Demo)",
+    "government_level": "DEMO",
+    "category": "Pension",
+    "benefits": "Monthly pension of ₹2,000.",
+    "application_url": "https://example.gov.demo/senior-citizen-pension",
+    "rule": {
+      "logic": "AND",
+      "conditions": [
+        { "field": "age", "operator": ">=", "value": 60 }
+      ]
+    }
+  },
+  {
+    "name": "Below Poverty Line Ration Support",
+    "description": "DEMO SCHEME. For educational/academic demonstration only. Subsidized ration for households below the poverty line.",
+    "department": "Department of Food & Civil Supplies (Demo)",
+    "government_level": "DEMO",
+    "category": "Welfare",
+    "benefits": "Monthly subsidized ration of essential food grains.",
+    "application_url": "https://example.gov.demo/bpl-ration-support",
+    "rule": {
+      "logic": "AND",
+      "conditions": [
+        { "field": "annual_income", "operator": "<=", "value": 100000 }
+      ]
+    }
+  },
+  {
+    "name": "Reserved Category Scholarship",
+    "description": "DEMO SCHEME. For educational/academic demonstration only. Scholarship for students belonging to reserved categories.",
+    "department": "Department of Education (Demo)",
+    "government_level": "DEMO",
+    "category": "Education",
+    "benefits": "Annual scholarship of ₹20,000.",
+    "application_url": "https://example.gov.demo/reserved-category-scholarship",
+    "rule": {
+      "logic": "AND",
+      "conditions": [
+        { "field": "category", "operator": "in", "value": ["SC", "ST", "OBC"] },
+        { "field": "student_status", "operator": "==", "value": true }
+      ]
+    }
+  },
+  {
+    "name": "Rural Housing Assistance",
+    "description": "DEMO SCHEME. For educational/academic demonstration only. Assistance for rural households to build or repair homes.",
+    "department": "Department of Rural Development (Demo)",
+    "government_level": "DEMO",
+    "category": "Housing",
+    "benefits": "One-time grant of ₹1,20,000 for home construction/repair.",
+    "application_url": "https://example.gov.demo/rural-housing-assistance",
+    "rule": {
+      "logic": "AND",
+      "conditions": [
+        { "field": "annual_income", "operator": "<=", "value": 200000 },
+        { "field": "family_size", "operator": ">=", "value": 4 }
+      ]
+    }
+  },
+  {
+    "name": "Unemployment Allowance",
+    "description": "DEMO SCHEME. For educational/academic demonstration only. Temporary monthly allowance for unemployed adults actively seeking work.",
+    "department": "Department of Labour (Demo)",
+    "government_level": "DEMO",
+    "category": "Employment",
+    "benefits": "Monthly allowance of ₹3,000 for up to 12 months.",
+    "application_url": "https://example.gov.demo/unemployment-allowance",
+    "rule": {
+      "logic": "AND",
+      "conditions": [
+        { "field": "employment_status", "operator": "==", "value": "unemployed" },
+        { "field": "age", "operator": "between", "value": [21, 40] }
+      ]
+    }
+  }
+]
