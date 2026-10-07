@@ -2,89 +2,277 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Scheme Eligibility Memory Agent</title>
   <style>
-    body { font: 16px/1.5 system-ui, sans-serif; max-width: 850px; margin: 2rem auto; padding: 0 1rem; color: #172033; }
-    input, button { font: inherit; padding: .55rem; margin: .2rem 0; }
-    input { max-width: 100%; box-sizing: border-box; }
-    label { display: grid; gap: .2rem; margin: .5rem 0; }
+    :root {
+      --bg: #f6f7f4;
+      --panel: #ffffff;
+      --side: #14302b;
+      --side-text: #d9e6e2;
+      --side-muted: #8fb0a8;
+      --ink: #17211f;
+      --muted: #5d6b67;
+      --line: #dfe5e1;
+      --accent: #0f766e;
+      --accent-ink: #ffffff;
+      --user: #0f766e;
+      --bot: #ffffff;
+      --ok: #166534; --ok-bg: #dcfce7;
+      --no: #991b1b; --no-bg: #fee2e2;
+      --need: #854d0e; --need-bg: #fef3c7;
+      --demo-bg: #fff4d6; --demo-ink: #6b4e00;
+      --radius: 14px;
+      font-family: "Segoe UI", system-ui, -apple-system, "Noto Sans", "Noto Sans Devanagari", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body { background: var(--bg); color: var(--ink); font-size: 15px; line-height: 1.55; }
+    button, input, select, textarea { font: inherit; color: inherit; }
     button { cursor: pointer; }
-    section { border: 1px solid #ccd3df; border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
-    #messages { min-height: 8rem; white-space: pre-wrap; }
-    .error { color: #a11; }
-    .hidden { display: none; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .hidden { display: none !important; }
+
+    /* ---------- Sign-in ---------- */
+    #auth { min-height: 100%; display: grid; place-items: center; padding: 1.5rem; }
+    .auth-card { width: min(420px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 1.75rem; }
+    .auth-card h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+    .auth-card p { margin: 0 0 1.25rem; color: var(--muted); }
+    .field { display: grid; gap: .25rem; margin-bottom: .85rem; font-size: .9rem; color: var(--muted); }
+    .field input, .field select { padding: .6rem .7rem; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink); width: 100%; }
+    .row { display: flex; gap: .6rem; }
+    .btn { padding: .6rem 1rem; border-radius: 10px; border: 1px solid var(--line); background: #fff; }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+    .btn.danger { color: var(--no); }
+    .row .btn { flex: 1; }
+    #notice { min-height: 1.3em; margin: .75rem 0 0; font-size: .88rem; color: var(--muted); }
+    #notice.error { color: var(--no); }
+
+    /* ---------- App shell ---------- */
+    #app { height: 100%; display: grid; grid-template-columns: 290px 1fr; }
+    aside { background: var(--side); color: var(--side-text); display: flex; flex-direction: column; min-height: 0; padding: 1rem; gap: .75rem; }
+    .brand { font-weight: 650; font-size: 1.02rem; padding: .25rem .25rem .5rem; }
+    .brand small { display: block; font-weight: 400; color: var(--side-muted); font-size: .78rem; }
+    .side-btn { width: 100%; text-align: left; padding: .6rem .75rem; border-radius: 10px; border: 1px solid rgba(255,255,255,.18); background: transparent; color: var(--side-text); }
+    .side-btn:hover { background: rgba(255,255,255,.08); }
+    .side-btn.new { background: rgba(255,255,255,.12); font-weight: 600; }
+    .side-label { font-size: .8rem; color: var(--side-muted); margin: .5rem .25rem 0; }
+    #history { flex: 1; overflow-y: auto; display: grid; gap: .15rem; align-content: start; min-height: 0; }
+    .hist-item { text-align: left; background: transparent; border: 0; color: var(--side-text); padding: .5rem .65rem; border-radius: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .hist-item:hover { background: rgba(255,255,255,.08); }
+    .hist-item.active { background: rgba(255,255,255,.16); }
+    .hist-empty { color: var(--side-muted); font-size: .85rem; padding: .25rem .65rem; }
+    .side-foot { display: grid; gap: .4rem; }
+
+    main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    .topbar { display: flex; align-items: center; gap: .75rem; padding: .75rem 1.25rem; border-bottom: 1px solid var(--line); background: var(--panel); padding-top: calc(.75rem + env(safe-area-inset-top, 0px)); }
+    .topbar h2 { margin: 0; font-size: 1rem; font-weight: 600; }
+    .topbar span { color: var(--muted); font-size: .85rem; }
+    #menu { display: none; border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: .3rem .6rem; }
+    #thread { flex: 1; overflow-y: auto; padding: 1.25rem 1rem 1rem; scroll-behavior: smooth; }
+    .lane { width: min(760px, 100%); margin: 0 auto; display: grid; gap: 1rem; }
+
+    /* ---------- Empty state ---------- */
+    .welcome { text-align: center; padding: 3.5rem 0 1rem; }
+    .welcome h3 { font-size: 1.5rem; margin: 0 0 .4rem; }
+    .welcome p { color: var(--muted); margin: 0 auto 1.4rem; max-width: 46ch; }
+    .chips { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; }
+    .chip { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: .45rem .9rem; font-size: .88rem; }
+    .chip:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ---------- Messages ---------- */
+    .msg { display: flex; gap: .6rem; align-items: flex-start; }
+    .msg.user { flex-direction: row-reverse; }
+    .avatar { flex: none; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; font-size: .8rem; font-weight: 650; background: var(--side); color: #fff; }
+    .msg.user .avatar { background: #cfe3df; color: var(--side); }
+    .bubble { max-width: min(600px, 86%); padding: .7rem .95rem; border-radius: var(--radius); background: var(--bot); border: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .msg.bot .bubble { border-top-left-radius: 4px; }
+    .msg.user .bubble { background: var(--user); border-color: var(--user); color: #fff; border-top-right-radius: 4px; }
+    .msg.error .bubble { background: var(--no-bg); border-color: #f5b8b8; color: var(--no); }
+    .extras { display: grid; gap: .6rem; margin-top: .6rem; white-space: normal; }
+    .demo-flag { background: var(--demo-bg); color: var(--demo-ink); border-radius: 8px; padding: .4rem .6rem; font-size: .82rem; font-weight: 600; }
+
+    .elig { display: grid; gap: .45rem; }
+    .elig-card { border: 1px solid var(--line); border-radius: 10px; padding: .55rem .7rem; background: #fbfcfb; }
+    .elig-head { display: flex; justify-content: space-between; gap: .6rem; align-items: center; }
+    .elig-name { font-weight: 600; font-size: .92rem; }
+    .badge { flex: none; font-size: .74rem; font-weight: 650; padding: .15rem .55rem; border-radius: 999px; }
+    .badge.ELIGIBLE { background: var(--ok-bg); color: var(--ok); }
+    .badge.NOT_ELIGIBLE { background: var(--no-bg); color: var(--no); }
+    .badge.NEEDS_INFORMATION { background: var(--need-bg); color: var(--need); }
+    .elig-note { margin: .3rem 0 0; font-size: .84rem; color: var(--muted); }
+    .elig-note button { border: 0; background: none; color: var(--accent); padding: 0; text-decoration: underline; }
+
+    .sources { display: flex; flex-wrap: wrap; gap: .4rem; }
+    .source { font-size: .8rem; text-decoration: none; color: var(--accent); border: 1px solid var(--line); border-radius: 8px; padding: .2rem .55rem; background: #fff; }
+    .source:hover { border-color: var(--accent); }
+    .saved { font-size: .8rem; color: var(--muted); }
+
+    .typing .bubble { display: flex; gap: 4px; padding: .85rem 1rem; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); opacity: .35; animation: blink 1.1s infinite; }
+    .dot:nth-child(2) { animation-delay: .18s; } .dot:nth-child(3) { animation-delay: .36s; }
+    @keyframes blink { 50% { opacity: 1; } }
+
+    /* ---------- Composer ---------- */
+    .composer { padding: .75rem 1rem calc(1rem + env(safe-area-inset-bottom, 0px)); background: linear-gradient(to top, var(--bg) 70%, transparent); }
+    .composer form { width: min(760px, 100%); margin: 0 auto; display: flex; align-items: flex-end; gap: .5rem; background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: .45rem .45rem .45rem .9rem; }
+    .composer form:focus-within { border-color: var(--accent); }
+    .composer textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent; max-height: 9rem; padding: .4rem 0; }
+    #send { width: 40px; height: 40px; border-radius: 50%; border: 0; background: var(--accent); color: #fff; font-size: 1.1rem; display: grid; place-items: center; }
+    #send:disabled { opacity: .45; cursor: not-allowed; }
+    .hint { width: min(760px, 100%); margin: .4rem auto 0; text-align: center; color: var(--muted); font-size: .76rem; }
+
+    /* ---------- Dialogs ---------- */
+    dialog { border: 1px solid var(--line); border-radius: 16px; padding: 0; width: min(560px, 94vw); max-height: 90vh; background: var(--panel); color: var(--ink); }
+    dialog::backdrop { background: rgba(10, 25, 22, .5); }
+    .dlg-head { display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.25rem; border-bottom: 1px solid var(--line); }
+    .dlg-head h3 { margin: 0; font-size: 1.05rem; }
+    .dlg-body { padding: 1rem 1.25rem; overflow-y: auto; max-height: calc(90vh - 130px); }
+    .dlg-body p.note { margin: 0 0 1rem; color: var(--muted); font-size: .88rem; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 .8rem; }
+    .dlg-foot { display: flex; justify-content: flex-end; gap: .5rem; padding: .85rem 1.25rem; border-top: 1px solid var(--line); }
+    .fact { display: flex; justify-content: space-between; gap: .75rem; align-items: center; padding: .5rem 0; border-bottom: 1px solid var(--line); }
+    .fact b { font-weight: 600; }
+    .fact button { border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: .2rem .6rem; font-size: .82rem; }
+    .close { border: 0; background: none; font-size: 1.3rem; line-height: 1; color: var(--muted); }
+
+    @media (max-width: 760px) {
+      #app { grid-template-columns: 1fr; }
+      aside { position: fixed; inset: 0 25% 0 0; z-index: 10; transform: translateX(-100%); transition: transform .2s; padding-top: calc(1rem + env(safe-area-inset-top, 0px)); }
+      aside.open { transform: none; }
+      #menu { display: block; }
+      .grid2 { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
   </style>
 </head>
 <body>
-  <h1>Scheme Eligibility Memory Agent</h1>
-  <p>Ask about reviewed scheme records. Eligibility is evaluated from your saved profile using deterministic rules.</p>
-  <p id="notice" role="status"></p>
 
-  <section id="auth">
-    <h2>Sign in or create an account</h2>
-    <form id="auth-form">
-      <label>Username <input name="username" autocomplete="username" required></label>
-      <label>Email (registration only) <input name="email" type="email" autocomplete="email"></label>
-      <label>Password <input name="password" type="password" autocomplete="current-password" minlength="12" required></label>
-      <button type="submit" data-action="login">Log in</button>
-      <button type="submit" data-action="register">Register</button>
-    </form>
-  </section>
-
-  <div id="workspace" class="hidden">
-    <button id="logout" type="button">Log out</button>
-    <section>
-      <h2>Your saved profile</h2>
-      <p>Profile details stay in this application's database. They are used by the deterministic eligibility checks.</p>
-      <form id="profile-form">
-        <label>Age <input name="age" type="number" min="0" max="130"></label>
-        <label>State or union territory <input name="state" maxlength="80"></label>
-        <label>District <input name="district" maxlength="80"></label>
-        <label>Annual household income (₹) <input name="annual_income" type="number" min="0" step="any"></label>
-        <label>Occupation <input name="occupation" maxlength="80"></label>
-        <label>Education <input name="education_level" maxlength="80"></label>
-        <label>Employment status <input name="employment_status" maxlength="30"></label>
-        <label>Family size <input name="family_size" type="number" min="1" step="1"></label>
-        <label>Social category <input name="category" maxlength="30"></label>
-        <label>Are you currently a student?
-          <select name="student_status"><option value="">Not provided</option><option value="true">Yes</option><option value="false">No</option></select>
-        </label>
-        <label>Are you a farmer?
-          <select name="farmer_status"><option value="">Not provided</option><option value="true">Yes</option><option value="false">No</option></select>
-        </label>
-        <label>Do you have a disability?
-          <select name="disability_status"><option value="">Not provided</option><option value="true">Yes</option><option value="false">No</option></select>
-        </label>
-        <button type="submit">Save profile</button>
+  <!-- Sign in -->
+  <div id="auth">
+    <div class="auth-card">
+      <h1>Scheme Eligibility Memory Agent</h1>
+      <p>Sign in so the assistant can remember your details and check which government schemes fit you.</p>
+      <form id="auth-form">
+        <label class="field">Username <input name="username" autocomplete="username" required></label>
+        <label class="field">Email (only needed to register) <input name="email" type="email" autocomplete="email"></label>
+        <label class="field">Password (12+ characters) <input name="password" type="password" autocomplete="current-password" minlength="12" required></label>
+        <div class="row">
+          <button class="btn primary" type="submit" data-action="login">Log in</button>
+          <button class="btn" type="submit" data-action="register">Register</button>
+        </div>
       </form>
-    </section>
-    <section>
-      <h2>Remembered information</h2>
-      <p>Facts are saved when you state them directly. Remove a fact here or clear all remembered profile facts.</p>
-      <ul id="memory-facts"></ul>
-      <button id="clear-memory" type="button">Clear remembered profile facts</button>
-      <button id="clear-conversations" type="button">Clear conversation history</button>
-    </section>
-    <section>
-      <h2>Ask about schemes</h2>
-      <form id="chat-form">
-        <label>Your question <input name="message" maxlength="2000" required></label>
-        <button type="submit">Ask</button>
-      </form>
-      <div id="messages" aria-live="polite"></div>
-    </section>
+      <p id="notice" role="status"></p>
+    </div>
   </div>
 
+  <!-- Chat app -->
+  <div id="app" class="hidden">
+    <aside id="sidebar">
+      <div class="brand">Scheme Agent<small>Ask about schemes. It remembers you.</small></div>
+      <button class="side-btn new" id="new-chat" type="button">+ New chat</button>
+      <div class="side-label">Recent chats</div>
+      <div id="history"></div>
+      <div class="side-foot">
+        <button class="side-btn" id="open-profile" type="button">My profile</button>
+        <button class="side-btn" id="open-memory" type="button">What the agent remembers</button>
+        <button class="side-btn" id="logout" type="button">Log out</button>
+      </div>
+    </aside>
+
+    <main>
+      <div class="topbar">
+        <button id="menu" type="button" aria-label="Open menu">☰</button>
+        <h2>Scheme assistant</h2>
+        <span id="status-line">Answers use reviewed sources and rule-based eligibility checks</span>
+      </div>
+
+      <div id="thread" aria-live="polite">
+        <div class="lane" id="lane"></div>
+      </div>
+
+      <div class="composer">
+        <form id="chat-form">
+          <textarea id="message" name="message" rows="1" maxlength="2000" placeholder="Ask about schemes… e.g. Which schemes can I apply for?" aria-label="Ask about schemes" required></textarea>
+          <button id="send" type="submit" aria-label="Send">➤</button>
+        </form>
+        <div class="hint">Enter to send · Shift+Enter for a new line · Don’t share identity numbers or passwords</div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Profile dialog -->
+  <dialog id="profile-dialog">
+    <div class="dlg-head"><h3>My profile</h3><button class="close" type="button" data-close aria-label="Close">×</button></div>
+    <form id="profile-form">
+      <div class="dlg-body">
+        <p class="note">Saved once and used by the eligibility checks. Fields you leave empty stay “not provided”.</p>
+        <div class="grid2">
+          <label class="field">Age <input name="age" type="number" min="0" max="130"></label>
+          <label class="field">Gender <input name="gender" maxlength="20"></label>
+          <label class="field">State or union territory <input name="state" maxlength="80"></label>
+          <label class="field">District <input name="district" maxlength="80"></label>
+          <label class="field">Annual household income (₹) <input name="annual_income" type="number" min="0" step="any"></label>
+          <label class="field">Family size <input name="family_size" type="number" min="1" step="1"></label>
+          <label class="field">Occupation <input name="occupation" maxlength="80"></label>
+          <label class="field">Education <input name="education_level" maxlength="80"></label>
+          <label class="field">Employment status <input name="employment_status" maxlength="30"></label>
+          <label class="field">Social category <input name="category" maxlength="30"></label>
+          <label class="field">Student? <select name="student_status"><option value="">Not provided</option><option value="true">Yes</option><option value="false">No</option></select></label>
+          <label class="field">Farmer? <select name="farmer_status"><option value="">Not provided</option><option value="true">Yes</option><option value="false">No</option></select></label>
+          <label class="field">Disability? <select name="disability_status"><option value="">Not provided</option><option value="true">Yes</option><option value="false">No</option></select></label>
+        </div>
+        <p id="profile-msg" class="note" role="status"></p>
+      </div>
+      <div class="dlg-foot">
+        <button class="btn" type="button" data-close>Cancel</button>
+        <button class="btn primary" type="submit">Save profile</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Memory dialog -->
+  <dialog id="memory-dialog">
+    <div class="dlg-head"><h3>What the agent remembers</h3><button class="close" type="button" data-close aria-label="Close">×</button></div>
+    <div class="dlg-body">
+      <p class="note">Facts are saved only when you state them directly in chat. You can forget any of them.</p>
+      <div id="memory-facts"></div>
+    </div>
+    <div class="dlg-foot">
+      <button class="btn danger" id="clear-conversations" type="button">Clear chat history</button>
+      <button class="btn danger" id="clear-memory" type="button">Forget all facts</button>
+    </div>
+  </dialog>
+
   <script>
-    const notice = document.querySelector("#notice");
-    const auth = document.querySelector("#auth");
-    const workspace = document.querySelector("#workspace");
-    const messages = document.querySelector("#messages");
-    const memoryFacts = document.querySelector("#memory-facts");
+    const $ = (selector) => document.querySelector(selector);
+    const lane = $("#lane"), thread = $("#thread"), input = $("#message"), sendBtn = $("#send");
     let conversationId = null;
+    let busy = false;
+
+    const FIELD_LABELS = {
+      age: "age", gender: "gender", state: "state", district: "district", annual_income: "annual income",
+      occupation: "occupation", education_level: "education", family_size: "family size",
+      marital_status: "marital status", disability_status: "disability status", student_status: "student status",
+      employment_status: "employment status", category: "social category", farmer_status: "farmer status"
+    };
+    const STATUS_LABELS = { ELIGIBLE: "Eligible", NOT_ELIGIBLE: "Not eligible", NEEDS_INFORMATION: "Needs more info" };
+    const SUGGESTIONS = [
+      "Which schemes can I apply for?",
+      "I am a 21-year-old engineering student from Maharashtra, family income is around ₹2 lakh",
+      "Am I eligible for a scholarship?",
+      "What documents do I need?"
+    ];
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
 
     function showNotice(text, isError = false) {
+      const notice = $("#notice");
       notice.textContent = text;
       notice.className = isError ? "error" : "";
     }
@@ -94,148 +282,293 @@
         ...options,
         headers: { "Content-Type": "application/json", ...(options.headers || {}) }
       });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+      let result = {};
+      try { result = await response.json(); } catch (_) {}
+      if (!response.ok) {
+        const error = new Error(result.error || `Request failed (${response.status})`);
+        error.status = response.status;
+        throw error;
+      }
       return result;
     }
 
-    function showWorkspace(profile) {
-      auth.classList.add("hidden");
-      workspace.classList.remove("hidden");
-      document.querySelector('[name="age"]').value = profile.age ?? "";
-      document.querySelector('[name="state"]').value = profile.state ?? "";
-      document.querySelector('[name="district"]').value = profile.district ?? "";
-      document.querySelector('[name="annual_income"]').value = profile.annual_income ?? "";
-      for (const field of ["occupation", "education_level", "employment_status", "family_size", "category"]) {
-        document.querySelector(`[name="${field}"]`).value = profile[field] ?? "";
+    function scrollDown() { thread.scrollTop = thread.scrollHeight; }
+    function lastUpdatedLabel(text) { return text; }
+
+    /* ---------- Rendering ---------- */
+    function renderWelcome() {
+      lane.replaceChildren();
+      const box = el("div", "welcome");
+      box.append(el("h3", "", "What would you like to know?"));
+      box.append(el("p", "", "Tell me a bit about yourself once and I’ll remember it. Then ask which government schemes you may qualify for."));
+      const chips = el("div", "chips");
+      for (const text of SUGGESTIONS) {
+        const chip = el("button", "chip", text);
+        chip.type = "button";
+        chip.addEventListener("click", () => { input.value = text; sendMessage(); });
+        chips.append(chip);
       }
-      document.querySelector('[name="student_status"]').value =
-        profile.student_status === null ? "" : String(profile.student_status);
-      for (const field of ["farmer_status", "disability_status"]) {
-        document.querySelector(`[name="${field}"]`).value = profile[field] === null ? "" : String(profile[field]);
-      }
-      loadMemory();
+      box.append(chips);
+      lane.append(box);
     }
 
-    async function loadMemory() {
-      try {
-        const result = await requestJson("/api/memory");
-        memoryFacts.replaceChildren();
-        for (const fact of result.facts) {
-          const item = document.createElement("li");
-          item.textContent = `${fact.key}: ${JSON.stringify(fact.value)} `;
-          const remove = document.createElement("button");
-          remove.type = "button";
-          remove.textContent = "Forget";
-          remove.addEventListener("click", async () => {
-            await requestJson(`/api/memory/${encodeURIComponent(fact.key)}`, { method: "DELETE" });
-            loadMemory();
-          });
-          item.append(remove);
-          memoryFacts.append(item);
+    function addMessage(role, text, extras) {
+      const wrap = el("div", `msg ${role === "user" ? "user" : "bot"}${extras && extras.isError ? " error" : ""}`);
+      wrap.append(el("div", "avatar", role === "user" ? "You" : "AI"));
+      const bubble = el("div", "bubble");
+      bubble.append(document.createTextNode(text));
+      if (extras && !extras.isError) {
+        const box = el("div", "extras");
+        if (extras.demo) box.append(el("div", "demo-flag", "DEMO / TEST DATA ONLY — not verified government information."));
+        if (extras.eligibility && extras.eligibility.length) box.append(renderEligibility(extras.eligibility));
+        if (extras.citations && extras.citations.length) {
+          const sources = el("div", "sources");
+          for (const citation of extras.citations) {
+            const link = el("a", "source", `[${citation.citation}] ${citation.title} — ${citation.publisher}`);
+            link.href = citation.url;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            sources.append(link);
+          }
+          box.append(sources);
         }
-      } catch (error) { showNotice(error.message, true); }
+        if (extras.saved && extras.saved.length) {
+          box.append(el("div", "saved", "Remembered: " + extras.saved.join(", ")));
+        }
+        if (box.children.length) bubble.append(box);
+      }
+      wrap.append(bubble);
+      lane.append(wrap);
+      scrollDown();
+      return wrap;
     }
 
-    document.querySelector("#auth-form").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const action = event.submitter.dataset.action;
-      const values = Object.fromEntries(new FormData(form));
-      const endpoint = action === "register" ? "/api/register" : "/api/login";
-      if (action !== "register") delete values.email;
-      try {
-        await requestJson(endpoint, { method: "POST", body: JSON.stringify(values) });
-        conversationId = null;
-        const result = await requestJson("/api/profile");
-        showWorkspace(result.profile);
-        showNotice("Signed in.");
-      } catch (error) {
-        showNotice(error.message, true);
+    function renderEligibility(rows) {
+      const list = el("div", "elig");
+      for (const row of rows) {
+        const card = el("div", "elig-card");
+        const head = el("div", "elig-head");
+        head.append(el("span", "elig-name", row.scheme));
+        head.append(el("span", `badge ${row.status}`, STATUS_LABELS[row.status] || row.status));
+        card.append(head);
+        if (row.status === "NEEDS_INFORMATION" && row.missing_fields && row.missing_fields.length) {
+          const note = el("p", "elig-note", "Missing: " + row.missing_fields.map((f) => FIELD_LABELS[f] || f).join(", ") + ". ");
+          const fix = el("button", "", "Add to profile");
+          fix.type = "button";
+          fix.addEventListener("click", openProfile);
+          note.append(fix);
+          card.append(note);
+        } else if (row.status === "NOT_ELIGIBLE" && row.failed_conditions && row.failed_conditions.length) {
+          const first = row.failed_conditions[0];
+          card.append(el("p", "elig-note", `Why: ${FIELD_LABELS[first.field] || first.field} is ${JSON.stringify(first.actual)}, needs ${first.operator} ${JSON.stringify(first.expected)}`));
+        } else if (row.status === "ELIGIBLE" && row.reasons && row.reasons.length) {
+          card.append(el("p", "elig-note", "Because: " + row.reasons.join("; ")));
+        }
+        list.append(card);
       }
+      return list;
+    }
+
+    function showTyping() {
+      const wrap = el("div", "msg bot typing");
+      wrap.append(el("div", "avatar", "AI"));
+      const bubble = el("div", "bubble");
+      bubble.append(el("span", "dot"), el("span", "dot"), el("span", "dot"));
+      wrap.append(bubble);
+      lane.append(wrap);
+      scrollDown();
+      return wrap;
+    }
+
+    /* ---------- Chat ---------- */
+    async function sendMessage() {
+      const text = input.value.trim();
+      if (!text || busy) return;
+      busy = true;
+      sendBtn.disabled = true;
+      if (lane.querySelector(".welcome")) lane.replaceChildren();
+      addMessage("user", text);
+      input.value = "";
+      autoGrow();
+      const typing = showTyping();
+      try {
+        const before = new Set((await safeMemoryKeys()));
+        const result = await requestJson("/api/chat", {
+          method: "POST",
+          body: JSON.stringify({ message: text, conversation_id: conversationId })
+        });
+        typing.remove();
+        conversationId = result.conversation_id;
+        const saved = (result.memory || []).map((f) => f.key).filter((k) => !before.has(k)).map((k) => FIELD_LABELS[k] || k);
+        addMessage("bot", result.answer, { demo: result.demo, eligibility: result.eligibility, citations: result.citations, saved });
+        loadHistory();
+      } catch (error) {
+        typing.remove();
+        if (error.status === 401) { showAuth(); return; }
+        addMessage("bot", error.message, { isError: true });
+      } finally {
+        busy = false;
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    }
+
+    async function safeMemoryKeys() {
+      try { return (await requestJson("/api/memory")).facts.map((f) => f.key); } catch (_) { return []; }
+    }
+
+    function autoGrow() {
+      input.style.height = "auto";
+      input.style.height = Math.min(input.scrollHeight, 144) + "px";
+    }
+
+    $("#chat-form").addEventListener("submit", (event) => { event.preventDefault(); sendMessage(); });
+    input.addEventListener("input", autoGrow);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendMessage(); }
     });
 
-    document.querySelector("#logout").addEventListener("click", async () => {
-      await requestJson("/api/logout", { method: "POST" });
+    /* ---------- History ---------- */
+    async function loadHistory() {
+      try {
+        const { conversations } = await requestJson("/api/conversations");
+        const box = $("#history");
+        box.replaceChildren();
+        if (!conversations.length) { box.append(el("div", "hist-empty", "No chats yet")); return; }
+        for (const convo of conversations) {
+          const item = el("button", "hist-item" + (convo.id === conversationId ? " active" : ""), convo.title || "Untitled chat");
+          item.type = "button";
+          item.title = convo.title || "";
+          item.addEventListener("click", () => openConversation(convo));
+          box.append(item);
+        }
+      } catch (_) {}
+    }
+
+    function openConversation(convo) {
+      conversationId = convo.id;
+      lane.replaceChildren();
+      for (const message of convo.messages) addMessage(message.role === "user" ? "user" : "bot", message.content);
+      $("#sidebar").classList.remove("open");
+      loadHistory();
+    }
+
+    function newChat() {
       conversationId = null;
-      workspace.classList.add("hidden");
-      auth.classList.remove("hidden");
+      renderWelcome();
+      $("#sidebar").classList.remove("open");
+      loadHistory();
+      input.focus();
+    }
+
+    /* ---------- Auth ---------- */
+    function showAuth() {
+      $("#app").classList.add("hidden");
+      $("#auth").classList.remove("hidden");
+      conversationId = null;
+    }
+
+    async function enterApp() {
+      const { profile } = await requestJson("/api/profile");
+      fillProfile(profile);
+      $("#auth").classList.add("hidden");
+      $("#app").classList.remove("hidden");
+      newChat();
+    }
+
+    $("#auth-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const values = Object.fromEntries(new FormData(event.currentTarget));
+      const action = event.submitter.dataset.action;
+      if (action !== "register") delete values.email;
+      try {
+        await requestJson(action === "register" ? "/api/register" : "/api/login", { method: "POST", body: JSON.stringify(values) });
+        showNotice("");
+        await enterApp();
+      } catch (error) { showNotice(error.message, true); }
+    });
+
+    $("#logout").addEventListener("click", async () => {
+      await requestJson("/api/logout", { method: "POST" }).catch(() => {});
+      showAuth();
       showNotice("Signed out.");
     });
 
-    document.querySelector("#profile-form").addEventListener("submit", async (event) => {
+    /* ---------- Profile ---------- */
+    const profileForm = $("#profile-form");
+    const TEXT_FIELDS = ["gender", "state", "district", "occupation", "education_level", "employment_status", "category"];
+    const BOOL_FIELDS = ["student_status", "farmer_status", "disability_status"];
+
+    function fillProfile(profile) {
+      for (const key of ["age", "annual_income", "family_size", ...TEXT_FIELDS]) profileForm.elements[key].value = profile[key] ?? "";
+      for (const key of BOOL_FIELDS) profileForm.elements[key].value = profile[key] === null || profile[key] === undefined ? "" : String(profile[key]);
+    }
+
+    function openProfile() { $("#profile-msg").textContent = ""; $("#profile-dialog").showModal(); }
+
+    profileForm.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const form = event.currentTarget;
-      const values = Object.fromEntries(new FormData(form));
-      values.age = values.age === "" ? null : Number(values.age);
-      values.annual_income = values.annual_income === "" ? null : Number(values.annual_income);
-      values.family_size = values.family_size === "" ? null : Number(values.family_size);
-      values.student_status = values.student_status === "" ? null : values.student_status === "true";
-      for (const field of ["farmer_status", "disability_status"]) {
-        values[field] = values[field] === "" ? null : values[field] === "true";
-      }
-      for (const field of ["state", "district", "occupation", "education_level", "employment_status", "category"]) {
-        values[field] = values[field] === "" ? null : values[field];
-      }
+      const raw = Object.fromEntries(new FormData(profileForm));
+      const values = {};
+      for (const key of ["age", "annual_income", "family_size"]) values[key] = raw[key] === "" ? null : Number(raw[key]);
+      for (const key of BOOL_FIELDS) values[key] = raw[key] === "" ? null : raw[key] === "true";
+      for (const key of TEXT_FIELDS) values[key] = raw[key] === "" ? null : raw[key];
       try {
         await requestJson("/api/profile", { method: "PUT", body: JSON.stringify(values) });
-        await loadMemory();
-        showNotice("Profile saved.");
-      } catch (error) {
-        showNotice(error.message, true);
-      }
+        $("#profile-dialog").close();
+        addMessage("bot", "Profile saved. Ask me about schemes whenever you’re ready.");
+      } catch (error) { $("#profile-msg").textContent = error.message; }
     });
 
-    document.querySelector("#clear-memory").addEventListener("click", async () => {
-      await requestJson("/api/memory", { method: "DELETE" });
-      showNotice("Remembered profile facts cleared.");
-      loadMemory();
-    });
-    document.querySelector("#clear-conversations").addEventListener("click", async () => {
-      await requestJson("/api/conversations", { method: "DELETE" });
-      conversationId = null;
-      showNotice("Conversation history cleared.");
-    });
-
-    document.querySelector("#chat-form").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const message = new FormData(form).get("message");
-      messages.textContent = "Thinking…";
+    /* ---------- Memory ---------- */
+    async function openMemory() {
+      const box = $("#memory-facts");
+      box.replaceChildren();
       try {
-        const result = await requestJson("/api/chat", {
-          method: "POST",
-          body: JSON.stringify({ message, conversation_id: conversationId })
-        });
-        conversationId = result.conversation_id;
-        loadMemory();
-        messages.replaceChildren();
-        const answer = document.createElement("p");
-        answer.textContent = result.answer;
-        messages.append(answer);
-        if (result.demo) {
-          const warning = document.createElement("strong");
-          warning.textContent = "DEMO / TEST DATA ONLY — not verified government information.";
-          messages.prepend(warning, document.createElement("br"));
+        const { facts } = await requestJson("/api/memory");
+        if (!facts.length) box.append(el("p", "note", "Nothing saved yet. Try telling me your age, state or income in chat."));
+        for (const fact of facts) {
+          const row = el("div", "fact");
+          const label = el("span");
+          label.append(el("b", "", (FIELD_LABELS[fact.key] || fact.key) + ": "), document.createTextNode(String(fact.value)));
+          const forget = el("button", "", "Forget");
+          forget.type = "button";
+          forget.addEventListener("click", async () => {
+            await requestJson(`/api/memory/${encodeURIComponent(fact.key)}`, { method: "DELETE" });
+            const { profile } = await requestJson("/api/profile");
+            fillProfile(profile);
+            openMemory();
+          });
+          row.append(label, forget);
+          box.append(row);
         }
-        for (const citation of result.citations) {
-          const link = document.createElement("a");
-          link.href = citation.url;
-          link.target = "_blank";
-          link.rel = "noopener noreferrer";
-          link.textContent = `[${citation.citation}] ${citation.title} — ${citation.publisher}`;
-          messages.append(document.createElement("br"), link);
-        }
-        if (result.eligibility.length) {
-          const summary = document.createElement("pre");
-          summary.textContent = JSON.stringify(result.eligibility, null, 2);
-          messages.append(summary);
-        }
-      } catch (error) {
-        messages.textContent = error.message;
-        showNotice("The question could not be answered.", true);
-      }
+      } catch (error) { box.append(el("p", "note", error.message)); }
+      if (!$("#memory-dialog").open) $("#memory-dialog").showModal();
+    }
+
+    $("#clear-memory").addEventListener("click", async () => {
+      if (!confirm("Forget all remembered profile facts?")) return;
+      await requestJson("/api/memory", { method: "DELETE" });
+      const { profile } = await requestJson("/api/profile");
+      fillProfile(profile);
+      openMemory();
     });
+    $("#clear-conversations").addEventListener("click", async () => {
+      if (!confirm("Delete all chat history?")) return;
+      await requestJson("/api/conversations", { method: "DELETE" });
+      $("#memory-dialog").close();
+      newChat();
+    });
+
+    /* ---------- Wiring ---------- */
+    $("#new-chat").addEventListener("click", newChat);
+    $("#open-profile").addEventListener("click", () => { $("#sidebar").classList.remove("open"); openProfile(); });
+    $("#open-memory").addEventListener("click", () => { $("#sidebar").classList.remove("open"); openMemory(); });
+    $("#menu").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
+    document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
+
+    // Restore an existing session on page load.
+    requestJson("/api/profile").then(enterApp).catch(() => showAuth());
   </script>
 </body>
 </html>
