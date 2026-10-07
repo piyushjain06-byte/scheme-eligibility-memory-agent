@@ -1,9 +1,11 @@
 """
 Database initialization script.
 
-Run this once (and again any time you want a clean slate):
+Run this to create the schema and seed demo data without deleting existing data:
 
     python init_db.py
+
+Use --reset --confirm-reset only for a disposable local database.
 
 It will:
   1. Drop and recreate all tables.
@@ -13,6 +15,7 @@ It will:
 
 import json
 import os
+import argparse
 from datetime import datetime
 
 from app import create_app
@@ -57,10 +60,21 @@ def seed_demo_schemes(json_path=DEMO_SCHEMES_PATH):
             name=entry["name"],
             description=entry.get("description"),
             department=entry.get("department"),
+            ministry=entry.get("ministry", entry.get("department")),
+            objective=entry.get("objective", entry.get("description")),
+            eligibility=entry.get("eligibility"),
+            required_documents=entry.get("required_documents", []),
+            application_process=entry.get("application_process"),
             government_level=entry.get("government_level", "DEMO"),
             category=entry.get("category"),
             benefits=entry.get("benefits"),
             application_url=entry.get("application_url"),
+            source_url=entry.get("source_url"),
+            source_verified=False,
+            source_type="DEMO",
+            scheme_status="DEMO",
+            exclusions=entry.get("exclusions"),
+            is_demo=True,
             active=True,
             rule_version=1,
         )
@@ -81,14 +95,27 @@ def seed_demo_schemes(json_path=DEMO_SCHEMES_PATH):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--reset", action="store_true", help="Drop and recreate every table (destructive)")
+    parser.add_argument("--confirm-reset", action="store_true", help="Confirm destructive reset")
+    args = parser.parse_args()
+    if args.confirm_reset and not args.reset:
+        parser.error("--confirm-reset requires --reset")
+    if args.reset and not args.confirm_reset:
+        parser.error("Destructive reset requires both --reset and --confirm-reset")
     app = create_app()
     with app.app_context():
-        db.drop_all()
+        if args.reset:
+            db.drop_all()
         db.create_all()
+        from upgrade_db import upgrade_existing_schema
+        upgrade_existing_schema()
         print("Tables created.")
 
         create_demo_admin()
-        seed_demo_schemes()
+        from agent.ingestion import import_records
+        with open(DEMO_SCHEMES_PATH, encoding="utf-8") as dataset:
+            print("Demo dataset:", import_records(json.load(dataset)))
 
         print("\nDatabase initialization complete.")
         print("---------------------------------------------")

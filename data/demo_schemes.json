@@ -10,11 +10,38 @@
     "rule": {
       "logic": "AND",
       "conditions": [
-        { "field": "age", "operator": "between", "value": [18, 25] },
-        { "field": "student_status", "operator": "==", "value": true },
-        { "field": "annual_income", "operator": "<=", "value": 250000 }
+        {
+          "field": "age",
+          "operator": "between",
+          "value": [
+            18,
+            25
+          ]
+        },
+        {
+          "field": "student_status",
+          "operator": "==",
+          "value": true
+        },
+        {
+          "field": "annual_income",
+          "operator": "<=",
+          "value": 250000
+        }
       ]
-    }
+    },
+    "ministry": "Department of Education (Demo)",
+    "objective": "DEMO SCHEME. For educational/academic demonstration only. Provides financial assistance to young students from low-income households to support their education.",
+    "eligibility": "{\"logic\": \"AND\", \"conditions\": [{\"field\": \"age\", \"operator\": \"between\", \"value\": [18, 25]}, {\"field\": \"student_status\", \"operator\": \"==\", \"value\": true}, {\"field\": \"annual_income\", \"operator\": \"<=\", \"value\": 250000}]}",
+    "required_documents": [],
+    "application_process": "DEMO / TEST DATA: no real application process is asserted.",
+    "source_url": "https://example.gov.demo/student-education-support",
+    "last_updated": null,
+    "source_verified": false,
+    "source_type": "DEMO",
+    "scheme_status": "DEMO",
+    "exclusions": "DEMO / TEST DATA: no official exclusions are asserted.",
+    "is_demo": true
   },
   {
     "name": "Skill Development Assistance",
@@ -27,10 +54,33 @@
     "rule": {
       "logic": "AND",
       "conditions": [
-        { "field": "age", "operator": "between", "value": [18, 35] },
-        { "field": "employment_status", "operator": "==", "value": "unemployed" }
+        {
+          "field": "age",
+          "operator": "between",
+          "value": [
+            18,
+            35
+          ]
+        },
+        {
+          "field": "employment_status",
+          "operator": "==",
+          "value": "unemployed"
+        }
       ]
-    }
+    },
+    "ministry": "Department of Skill Development (Demo)",
+    "objective": "DEMO SCHEME. For educational/academic demonstration only. Funds vocational training for unemployed youth to improve job readiness.",
+    "eligibility": "{\"logic\": \"AND\", \"conditions\": [{\"field\": \"age\", \"operator\": \"between\", \"value\": [18, 35]}, {\"field\": \"employment_status\", \"operator\": \"==\", \"value\": \"unemployed\"}]}",
+    "required_documents": [],
+    "application_process": "DEMO / TEST DATA: no real application process is asserted.",
+    "source_url": "https://example.gov.demo/skill-development",
+    "last_updated": null,
+    "source_verified": false,
+    "source_type": "DEMO",
+    "scheme_status": "DEMO",
+    "exclusions": "DEMO / TEST DATA: no official exclusions are asserted.",
+    "is_demo": true
   },
   {
     "name": "Farmer Income Support",
@@ -43,10 +93,30 @@
     "rule": {
       "logic": "OR",
       "conditions": [
-        { "field": "farmer_status", "operator": "==", "value": true },
-        { "field": "occupation", "operator": "==", "value": "farmer" }
+        {
+          "field": "farmer_status",
+          "operator": "==",
+          "value": true
+        },
+        {
+          "field": "occupation",
+          "operator": "==",
+          "value": "farmer"
+        }
       ]
-    }
+    },
+    "ministry": "Department of Agriculture (Demo)",
+    "objective": "DEMO SCHEME. For educational/academic demonstration only. Direct income support for farmers to help cover input costs.",
+    "eligibility": "{\"logic\": \"OR\", \"conditions\": [{\"field\": \"farmer_status\", \"operator\": \"==\", \"value\": true}, {\"field\": \"occupation\", \"operator\": \"==\", \"value\": \"farmer\"}]}",
+    "required_documents": [],
+    "application_process": "DEMO / TEST DATA: no real application process is asserted.",
+    "source_url": "https://example.gov.demo/farmer-income-support",
+    "last_updated": null,
+    "source_verified": false,
+    "source_type": "DEMO",
+    "scheme_status": "DEMO",
+    "exclusions": "DEMO / TEST DATA: no official exclusions are asserted.",
+    "is_demo": true
   },
   {
     "name": "Disability Welfare Assistance",
@@ -59,9 +129,25 @@
     "rule": {
       "logic": "AND",
       "conditions": [
-        { "field": "disability_status", "operator": "==", "value": true }
+        {
+          "field": "disability_status",
+          "operator": "==",
+          "value": true
+        }
       ]
-    }
+    },
+    "ministry": "Department of Social Justice (Demo)",
+    "objective": "DEMO SCHEME. For educational/academic demonstration only. Monthly assistance for persons with disabilities.",
+    "eligibility": "{\"logic\": \"AND\", \"conditions\": [{\"field\": \"disability_status\", \"operator\": \"==\", \"value\": true}]}",
+    "required_documents": [],
+    "application_process": "DEMO / TEST DATA: no real application process is asserted.",
+    "source_url": "https://example.gov.demo/disability-welfare",
+    "last_updated": null,
+    "source_verified": false,
+    "source_type": "DEMO",
+    "scheme_status": "DEMO",
+    "exclusions": "DEMO / TEST DATA: no official exclusions are asserted.",
+    "is_demo": true
   },
   {
     "name": "Women Empowerment Grant",
@@ -74,10 +160,30 @@
     "rule": {
       "logic": "AND",
       "conditions": [
-        { "field": "gender", "operator": "==", "value": "female" },
-        { "field": "annual_income", "operator": "<=", "value": 300000 }
+        {
+          "field": "gender",
+          "operator": "==",
+          "value": "female"
+        },
+        {
+          "field": "annual_income",
+          "operator": "<=",
+          "value": 300000
+        }
       ]
-    }
+    },
+    "ministry": "Department of Women & Child Development (Demo)",
+    "objective": "DEMO SCHEME. For educational/academic demonstration only. Grant to support women starting small businesses or continuing education.",
+    "eligibility": "{\"logic\": \"AND\", \"conditions\": [{\"field\": \"gender\", \"operator\": \"==\", \"value\": \"female\"}, {\"field\": \"annual_income\", \"operator\": \"<=\", \"value\": 300000}]}",
+    "required_documents": [],
+    "application_process": "DEMO / TEST DATA: no real application process is asserted.",
+    "source_url": "https://example.gov.demo/women-empowerment-grant",
+    "last_updated": null,
+    "source_verified": false,
+    "source_type": "DEMO",
+    "scheme_status": "DEMO",
+    "exclusions": "DEMO / TEST DATA: no official exclusions are asserted.",
+    "is_demo": true
   },
   {
     "name": "Senior Citizen Pension Scheme",
@@ -90,9 +196,25 @@
     "rule": {
       "logic": "AND",
       "conditions": [
-        { "field": "age", "operator": ">=", "value": 60 }
+        {
+          "field": "age",
+          "operator": ">=",
+          "value": 60
+        }
       ]
-    }
+    },
+    "ministry": "Department of Social Justice (Demo)",
+    "objective": "DEMO SCHEME. For educational/academic demonstration only. Monthly pension for elderly citizens without a regular income.",
+    "eligibility": "{\"logic\": \"AND\", \"conditions\": [{\"field\": \"age\", \"operator\": \">=\", \"value\": 60}]}",
+    "required_documents": [],
+    "application_process": "DEMO / TEST DATA: no real application process is asserted.",
+    "source_url": "https://example.gov.demo/senior-citizen-pension",
+    "last_updated": null,
+    "source_verified": false,
+    "source_type": "DEMO",
+    "scheme_status": "DEMO",
+    "exclusions": "DEMO / TEST DATA: no official exclusions are asserted.",
+    "is_demo": true
   },
   {
     "name": "Below Poverty Line Ration Support",
@@ -105,9 +227,25 @@
     "rule": {
       "logic": "AND",
       "conditions": [
-        { "field": "annual_income", "operator": "<=", "value": 100000 }
+        {
+          "field": "annual_income",
+          "operator": "<=",
+          "value": 100000
+        }
       ]
-    }
+    },
+    "ministry": "Department of Food & Civil Supplies (Demo)",
+    "objective": "DEMO SCHEME. For educational/academic demonstration only. Subsidized ration for households below the poverty line.",
+    "eligibility": "{\"logic\": \"AND\", \"conditions\": [{\"field\": \"annual_income\", \"operator\": \"<=\", \"value\": 100000}]}",
+    "required_documents": [],
+    "application_process": "DEMO / TEST DATA: no real application process is asserted.",
+    "source_url": "https://example.gov.demo/bpl-ration-support",
+    "last_updated": null,
+    "source_verified": false,
+    "source_type": "DEMO",
+    "scheme_status": "DEMO",
+    "exclusions": "DEMO / TEST DATA: no official exclusions are asserted.",
+    "is_demo": true
   },
   {
     "name": "Reserved Category Scholarship",
@@ -120,10 +258,34 @@
     "rule": {
       "logic": "AND",
       "conditions": [
-        { "field": "category", "operator": "in", "value": ["SC", "ST", "OBC"] },
-        { "field": "student_status", "operator": "==", "value": true }
+        {
+          "field": "category",
+          "operator": "in",
+          "value": [
+            "SC",
+            "ST",
+            "OBC"
+          ]
+        },
+        {
+          "field": "student_status",
+          "operator": "==",
+          "value": true
+        }
       ]
-    }
+    },
+    "ministry": "Department of Education (Demo)",
+    "objective": "DEMO SCHEME. For educational/academic demonstration only. Scholarship for students belonging to reserved categories.",
+    "eligibility": "{\"logic\": \"AND\", \"conditions\": [{\"field\": \"category\", \"operator\": \"in\", \"value\": [\"SC\", \"ST\", \"OBC\"]}, {\"field\": \"student_status\", \"operator\": \"==\", \"value\": true}]}",
+    "required_documents": [],
+    "application_process": "DEMO / TEST DATA: no real application process is asserted.",
+    "source_url": "https://example.gov.demo/reserved-category-scholarship",
+    "last_updated": null,
+    "source_verified": false,
+    "source_type": "DEMO",
+    "scheme_status": "DEMO",
+    "exclusions": "DEMO / TEST DATA: no official exclusions are asserted.",
+    "is_demo": true
   },
   {
     "name": "Rural Housing Assistance",
@@ -136,10 +298,30 @@
     "rule": {
       "logic": "AND",
       "conditions": [
-        { "field": "annual_income", "operator": "<=", "value": 200000 },
-        { "field": "family_size", "operator": ">=", "value": 4 }
+        {
+          "field": "annual_income",
+          "operator": "<=",
+          "value": 200000
+        },
+        {
+          "field": "family_size",
+          "operator": ">=",
+          "value": 4
+        }
       ]
-    }
+    },
+    "ministry": "Department of Rural Development (Demo)",
+    "objective": "DEMO SCHEME. For educational/academic demonstration only. Assistance for rural households to build or repair homes.",
+    "eligibility": "{\"logic\": \"AND\", \"conditions\": [{\"field\": \"annual_income\", \"operator\": \"<=\", \"value\": 200000}, {\"field\": \"family_size\", \"operator\": \">=\", \"value\": 4}]}",
+    "required_documents": [],
+    "application_process": "DEMO / TEST DATA: no real application process is asserted.",
+    "source_url": "https://example.gov.demo/rural-housing-assistance",
+    "last_updated": null,
+    "source_verified": false,
+    "source_type": "DEMO",
+    "scheme_status": "DEMO",
+    "exclusions": "DEMO / TEST DATA: no official exclusions are asserted.",
+    "is_demo": true
   },
   {
     "name": "Unemployment Allowance",
@@ -152,9 +334,32 @@
     "rule": {
       "logic": "AND",
       "conditions": [
-        { "field": "employment_status", "operator": "==", "value": "unemployed" },
-        { "field": "age", "operator": "between", "value": [21, 40] }
+        {
+          "field": "employment_status",
+          "operator": "==",
+          "value": "unemployed"
+        },
+        {
+          "field": "age",
+          "operator": "between",
+          "value": [
+            21,
+            40
+          ]
+        }
       ]
-    }
+    },
+    "ministry": "Department of Labour (Demo)",
+    "objective": "DEMO SCHEME. For educational/academic demonstration only. Temporary monthly allowance for unemployed adults actively seeking work.",
+    "eligibility": "{\"logic\": \"AND\", \"conditions\": [{\"field\": \"employment_status\", \"operator\": \"==\", \"value\": \"unemployed\"}, {\"field\": \"age\", \"operator\": \"between\", \"value\": [21, 40]}]}",
+    "required_documents": [],
+    "application_process": "DEMO / TEST DATA: no real application process is asserted.",
+    "source_url": "https://example.gov.demo/unemployment-allowance",
+    "last_updated": null,
+    "source_verified": false,
+    "source_type": "DEMO",
+    "scheme_status": "DEMO",
+    "exclusions": "DEMO / TEST DATA: no official exclusions are asserted.",
+    "is_demo": true
   }
 ]

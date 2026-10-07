@@ -5,7 +5,7 @@ Teammates: register your blueprints in create_app() below, in the marked
 section. Don't add routes directly to this file.
 """
 
-from flask import Flask
+from flask import Flask, render_template
 
 from config import Config
 from database.db import db
@@ -22,30 +22,13 @@ def create_app(config_class=Config):
     # looks unused.
     from database import models  # noqa: F401
 
-    # ------------------------------------------------------------------
-    # Blueprint registration — Members 2-4, uncomment/add your blueprint
-    # as you build it. Each route file should expose a Blueprint object.
-    # ------------------------------------------------------------------
-    # from routes.auth import auth_bp
-    # from routes.citizen import citizen_bp
-    # from routes.schemes import schemes_bp
-    # from routes.agent import agent_bp
-    # from routes.admin import admin_bp
-    #
-    # app.register_blueprint(auth_bp)
-    # app.register_blueprint(citizen_bp)
-    # app.register_blueprint(schemes_bp)
-    # app.register_blueprint(agent_bp)
-    # app.register_blueprint(admin_bp, url_prefix="/admin")
-    # ------------------------------------------------------------------
+    from routes.api import api_bp
+
+    app.register_blueprint(api_bp, url_prefix="/api")
 
     @app.route("/")
     def index():
-        return (
-            "Scheme Eligibility Memory Agent — backend foundation is running. "
-            "Run init_db.py first if you haven't. Routes/templates from the "
-            "rest of the team plug in via create_app()."
-        )
+        return render_template("index.html")
 
     @app.route("/health")
     def health():

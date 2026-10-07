@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scheme Eligibility Memory Agent</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 850px; margin: 2rem auto; padding: 0 1rem; color: #172033; }
+    input, button { font: inherit; padding: .55rem; margin: .2rem 0; }
+    input { max-width: 100%; box-sizing: border-box; }
+    label { display: grid; gap: .2rem; margin: .5rem 0; }
+    button { cursor: pointer; }
+    section { border: 1px solid #ccd3df; border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
+    #messages { min-height: 8rem; white-space: pre-wrap; }
+    .error { color: #a11; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Scheme Eligibility Memory Agent</h1>
+  <p>Ask about reviewed scheme records. Eligibility is evaluated from your saved profile using deterministic rules.</p>
+  <p id="notice" role="status"></p>
+
+  <section id="auth">
+    <h2>Sign in or create an account</h2>
+    <form id="auth-form">
+      <label>Username <input name="username" autocomplete="username" required></label>
+      <label>Email (registration only) <input name="email" type="email" autocomplete="email"></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" minlength="12" required></label>
+      <button type="submit" data-action="login">Log in</button>
+      <button type="submit" data-action="register">Register</button>
+    </form>
+  </section>
+
+  <div id="workspace" class="hidden">
+    <button id="logout" type="button">Log out</button>
+    <section>
+      <h2>Your saved profile</h2>
+      <p>Profile details stay in this application's database. They are used by the deterministic eligibility checks.</p>
+      <form id="profile-form">
+        <label>Age <input name="age" type="number" min="0" max="130"></label>
+        <label>State or union territory <input name="state" maxlength="80"></label>
+        <label>District <input name="district" maxlength="80"></label>
+        <label>Annual household income (₹) <input name="annual_income" type="number" min="0" step="any"></label>
+        <label>Occupation <input name="occupation" maxlength="80"></label>
+        <label>Education <input name="education_level" maxlength="80"></label>
+        <label>Employment status <input name="employment_status" maxlength="30"></label>
+        <label>Family size <input name="family_size" type="number" min="1" step="1"></label>
+        <label>Social category <input name="category" maxlength="30"></label>
+        <label>Are you currently a student?
+          <select name="student_status"><option value="">Not provided</option><option value="true">Yes</option><option value="false">No</option></select>
+        </label>
+        <label>Are you a farmer?
+          <select name="farmer_status"><option value="">Not provided</option><option value="true">Yes</option><option value="false">No</option></select>
+        </label>
+        <label>Do you have a disability?
+          <select name="disability_status"><option value="">Not provided</option><option value="true">Yes</option><option value="false">No</option></select>
+        </label>
+        <button type="submit">Save profile</button>
+      </form>
+    </section>
+    <section>
+      <h2>Remembered information</h2>
+      <p>Facts are saved when you state them directly. Remove a fact here or clear all remembered profile facts.</p>
+      <ul id="memory-facts"></ul>
+      <button id="clear-memory" type="button">Clear remembered profile facts</button>
+      <button id="clear-conversations" type="button">Clear conversation history</button>
+    </section>
+    <section>
+      <h2>Ask about schemes</h2>
+      <form id="chat-form">
+        <label>Your question <input name="message" maxlength="2000" required></label>
+        <button type="submit">Ask</button>
+      </form>
+      <div id="messages" aria-live="polite"></div>
+    </section>
+  </div>
+
+  <script>
+    const notice = document.querySelector("#notice");
+    const auth = document.querySelector("#auth");
+    const workspace = document.querySelector("#workspace");
+    const messages = document.querySelector("#messages");
+    const memoryFacts = document.querySelector("#memory-facts");
+    let conversationId = null;
+
+    function showNotice(text, isError = false) {
+      notice.textContent = text;
+      notice.className = isError ? "error" : "";
+    }
+
+    async function requestJson(url, options = {}) {
+      const response = await fetch(url, {
+        ...options,
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) }
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+      return result;
+    }
+
+    function showWorkspace(profile) {
+      auth.classList.add("hidden");
+      workspace.classList.remove("hidden");
+      document.querySelector('[name="age"]').value = profile.age ?? "";
+      document.querySelector('[name="state"]').value = profile.state ?? "";
+      document.querySelector('[name="district"]').value = profile.district ?? "";
+      document.querySelector('[name="annual_income"]').value = profile.annual_income ?? "";
+      for (const field of ["occupation", "education_level", "employment_status", "family_size", "category"]) {
+        document.querySelector(`[name="${field}"]`).value = profile[field] ?? "";
+      }
+      document.querySelector('[name="student_status"]').value =
+        profile.student_status === null ? "" : String(profile.student_status);
+      for (const field of ["farmer_status", "disability_status"]) {
+        document.querySelector(`[name="${field}"]`).value = profile[field] === null ? "" : String(profile[field]);
+      }
+      loadMemory();
+    }
+
+    async function loadMemory() {
+      try {
+        const result = await requestJson("/api/memory");
+        memoryFacts.replaceChildren();
+        for (const fact of result.facts) {
+          const item = document.createElement("li");
+          item.textContent = `${fact.key}: ${JSON.stringify(fact.value)} `;
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.textContent = "Forget";
+          remove.addEventListener("click", async () => {
+            await requestJson(`/api/memory/${encodeURIComponent(fact.key)}`, { method: "DELETE" });
+            loadMemory();
+          });
+          item.append(remove);
+          memoryFacts.append(item);
+        }
+      } catch (error) { showNotice(error.message, true); }
+    }
+
+    document.querySelector("#auth-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const action = event.submitter.dataset.action;
+      const values = Object.fromEntries(new FormData(form));
+      const endpoint = action === "register" ? "/api/register" : "/api/login";
+      if (action !== "register") delete values.email;
+      try {
+        await requestJson(endpoint, { method: "POST", body: JSON.stringify(values) });
+        conversationId = null;
+        const result = await requestJson("/api/profile");
+        showWorkspace(result.profile);
+        showNotice("Signed in.");
+      } catch (error) {
+        showNotice(error.message, true);
+      }
+    });
+
+    document.querySelector("#logout").addEventListener("click", async () => {
+      await requestJson("/api/logout", { method: "POST" });
+      conversationId = null;
+      workspace.classList.add("hidden");
+      auth.classList.remove("hidden");
+      showNotice("Signed out.");
+    });
+
+    document.querySelector("#profile-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const values = Object.fromEntries(new FormData(form));
+      values.age = values.age === "" ? null : Number(values.age);
+      values.annual_income = values.annual_income === "" ? null : Number(values.annual_income);
+      values.family_size = values.family_size === "" ? null : Number(values.family_size);
+      values.student_status = values.student_status === "" ? null : values.student_status === "true";
+      for (const field of ["farmer_status", "disability_status"]) {
+        values[field] = values[field] === "" ? null : values[field] === "true";
+      }
+      for (const field of ["state", "district", "occupation", "education_level", "employment_status", "category"]) {
+        values[field] = values[field] === "" ? null : values[field];
+      }
+      try {
+        await requestJson("/api/profile", { method: "PUT", body: JSON.stringify(values) });
+        await loadMemory();
+        showNotice("Profile saved.");
+      } catch (error) {
+        showNotice(error.message, true);
+      }
+    });
+
+    document.querySelector("#clear-memory").addEventListener("click", async () => {
+      await requestJson("/api/memory", { method: "DELETE" });
+      showNotice("Remembered profile facts cleared.");
+      loadMemory();
+    });
+    document.querySelector("#clear-conversations").addEventListener("click", async () => {
+      await requestJson("/api/conversations", { method: "DELETE" });
+      conversationId = null;
+      showNotice("Conversation history cleared.");
+    });
+
+    document.querySelector("#chat-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const message = new FormData(form).get("message");
+      messages.textContent = "Thinking…";
+      try {
+        const result = await requestJson("/api/chat", {
+          method: "POST",
+          body: JSON.stringify({ message, conversation_id: conversationId })
+        });
+        conversationId = result.conversation_id;
+        loadMemory();
+        messages.replaceChildren();
+        const answer = document.createElement("p");
+        answer.textContent = result.answer;
+        messages.append(answer);
+        if (result.demo) {
+          const warning = document.createElement("strong");
+          warning.textContent = "DEMO / TEST DATA ONLY — not verified government information.";
+          messages.prepend(warning, document.createElement("br"));
+        }
+        for (const citation of result.citations) {
+          const link = document.createElement("a");
+          link.href = citation.url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.textContent = `[${citation.citation}] ${citation.title} — ${citation.publisher}`;
+          messages.append(document.createElement("br"), link);
+        }
+        if (result.eligibility.length) {
+          const summary = document.createElement("pre");
+          summary.textContent = JSON.stringify(result.eligibility, null, 2);
+          messages.append(summary);
+        }
+      } catch (error) {
+        messages.textContent = error.message;
+        showNotice("The question could not be answered.", true);
+      }
+    });
+  </script>
+</body>
+</html>

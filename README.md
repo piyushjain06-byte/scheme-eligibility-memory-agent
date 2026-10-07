@@ -74,20 +74,24 @@ The system is built around five cooperating components:
 
 Deliberately, **the eligibility decision itself is never made by an LLM.** An LLM (if used at all) is restricted to understanding natural-language queries and phrasing friendly explanations — the actual ELIGIBLE / NOT_ELIGIBLE / NEEDS_INFORMATION verdict always comes from the deterministic rule engine acting on stored memory. This keeps every decision explainable and reproducible — a requirement for anything touching real eligibility logic.
 
-## Features
+## Current implementation
 
-- ✅ Persistent citizen profile (long-term memory) — filled once, reused everywhere
-- ✅ Government scheme knowledge base with versioned eligibility rules
-- ✅ Deterministic rule engine supporting `==`, `!=`, `<`, `<=`, `>`, `>=`, `between`, `in`, with `AND` / `OR` / `NOT` logic
-- ✅ Explainable eligibility results — every verdict comes with human-readable reasons
-- ✅ Missing-information detection — the agent only asks for what it doesn't already know
-- ✅ Full eligibility history per citizen, per scheme, per rule version
-- ✅ Newly-eligible detection when a profile or a rule changes
-- ✅ Rule versioning — old evaluations remain traceable to the rule version that produced them
-- ✅ Notification system (new eligibility, rule changes, profile changes)
-- ✅ Admin dashboard for scheme management and manual re-evaluation
-- ✅ Natural-language "Ask the Agent" chat interface
-- ✅ Role-based authentication (citizen / admin) with hashed passwords and protected routes
+- Persistent citizen profile memory with registration, login, and profile APIs
+- Persistent conversation history and explicit scheme-relevant memory facts, with view/update/delete controls
+- Deterministic eligibility engine with `==`, `!=`, `<`, `<=`, `>`, `>=`,
+  `between`, `in`, and nested `AND` / `OR` / `NOT`
+- Minimal browser chat page and JSON chat endpoint
+- Admin-only import and review endpoints for scheme metadata and official-source evidence
+- Chat answers grounded in reviewed source excerpts, with source URL citations
+- JSON/CSV dataset ingestion and a local SQL-backed chunk index with optional semantic embeddings
+- Eligibility checks remain local and deterministic; profile fields are not sent
+  in the OpenAI prompt
+- Optional OpenAI fine-tuning job submission for curated conversational examples
+
+The repository does not include real government scheme records or a completed
+fine-tuned model. It does not automatically crawl/recheck official portals,
+provide a full admin dashboard, or send notifications. The sample scheme JSON
+is fictional demonstration data.
 
 ## System Architecture
 
@@ -219,16 +223,13 @@ Supported logic: `AND`, `OR`, `NOT` (nestable)
 
 This makes every decision fully explainable — the reasons and failed conditions returned are never generated freeform, only derived directly from which specific rule conditions passed or failed.
 
-## Why This Is a "Memory Agent"
+## Why This Is a Memory Agent
 
-The differentiator from a standard scheme-lookup portal is **statefulness**:
-
-- A citizen's profile is saved once and reused for every scheme, every session, forever — never re-asked.
-- If a scheme needs one field the citizen hasn't provided yet, the agent asks **only for that field**, not the entire form again.
-- The system actively watches for two kinds of change:
-  - **Profile change** (e.g. occupation changes from *unemployed* to *student*) → affected schemes are automatically re-evaluated.
-  - **Rule change** (e.g. an admin raises a scheme's income limit) → every citizen's evaluation for that scheme is automatically re-run.
-- Whenever either kind of change flips a citizen's status from `NOT_ELIGIBLE`/`NEEDS_INFORMATION` to `ELIGIBLE`, a notification is generated — this is the "proactive" part of the agent.
+The profile persists across sessions until the user updates or clears it. The
+chat can ask only for fields missing from a particular eligibility rule. An
+administrator can manually re-run a scheme after a source or rule update; if a
+user changes to `ELIGIBLE`, the system creates an in-app notification.
+Automatic policy monitoring and outbound notifications are not implemented.
 
 ## Installation & Setup
 
@@ -240,14 +241,167 @@ cd scheme-eligibility-agent
 # 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Initialize the database (creates tables, demo admin, seeds 10 demo schemes)
+# 3. Initialize the database (creates tables, demo admin, imports 10 demo schemes safely)
 python init_db.py
 
-# 4. Run the app
+# 4. Copy .env.example to .env and set SECRET_KEY and (optionally) OPENAI_API_KEY.
+
+# 5. Run the app
 python app.py
 ```
 
-The app will be available at `http://127.0.0.1:5000`.
+The app will be available at `http://127.0.0.1:5000`. For an existing database,
+run `python upgrade_db.py` to add tables and columns without dropping records.
+`init_db.py` preserves existing data; use `--reset --confirm-reset` only for a
+disposable local database.
+
+### Grounded chat API
+
+The API uses the existing deterministic rule engine for eligibility. OpenAI is
+used only to phrase answers from reviewed evidence; citizen profile fields are
+kept local and are not added to the model prompt. The citizen's chat message is
+sent to the configured OpenAI API, so do not include identifiers or secrets in
+messages.
+
+Set these environment variables before starting the service:
+
+```text
+SECRET_KEY=<a long random secret that remains stable between restarts>
+OPENAI_API_KEY=<OpenAI API key>
+OPENAI_CHAT_MODEL=<base model or your fine-tuned model ID>
+EMBEDDING_MODEL=text-embedding-3-small
+OPENAI_FINE_TUNE_BASE_MODEL=<fine-tunable base model ID, only needed for training>
+SESSION_COOKIE_SECURE=true
+```
+
+Use HTTPS and set `SESSION_COOKIE_SECURE=true` outside local development.
+Without `OPENAI_API_KEY`, verified-source LLM chat returns `503`. When the
+database has only demo rows, the app can still show deterministic demo results
+with an explicit `DEMO / TEST DATA ONLY` warning and no citations or placeholder
+links. Demo rows are never treated as verified evidence and are excluded from
+public retrieval even if an import marks one verified.
+
+API endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/register` | Create a citizen account and start a session |
+| `POST` | `/api/login` / `/api/logout` | Start or end a session |
+| `GET` / `PUT` | `/api/profile` | Read or update the signed-in citizen's memory |
+| `GET` / `DELETE` | `/api/memory` | View or clear durable remembered facts |
+| `PUT` / `DELETE` | `/api/memory/<key>` | Update or forget one profile fact |
+| `GET` / `DELETE` | `/api/conversations` | View or clear chat history |
+| `POST` | `/api/chat` | Ask a question; returns answer, citations, deterministic results, and conversation ID |
+| `POST` | `/api/admin/schemes/import` | Admin-only structured scheme import |
+| `POST` | `/api/admin/documents/import` | Admin-only extracted text import for a scheme |
+| `POST` | `/api/admin/index/rebuild` | Rebuild chunks; creates embeddings when configured |
+| `GET` | `/api/admin/ingestion/errors` | View failed admin imports |
+| `POST` | `/api/admin/schemes/<id>/reevaluate` | Manually re-run one scheme and notify newly eligible users |
+| `GET` | `/api/notifications` | View the signed-in citizen's notifications |
+| `POST` | `/api/admin/sources/import` | Admin-only import; every source starts `PENDING` |
+| `GET` | `/api/admin/sources?status=PENDING` | Admin-only review queue (`PENDING`, `VERIFIED`, or `REJECTED`) |
+| `POST` | `/api/admin/sources/<id>/review` | Admin-only approval/rejection; only `VERIFIED` sources can ground chat |
+
+### Dataset and document ingestion
+
+Import team-collected structured data with:
+
+```bash
+python ingest_schemes.py data/schemes.json
+python ingest_schemes.py data/schemes.csv --no-embeddings
+```
+
+The canonical columns are `Scheme Name`, `Ministry`, `Objective`,
+`Eligibility`, `Benefits`, `Required Documents`, `Application Process`,
+`State/Central`, `Category`, `Source URL`, `Last Updated`, `Source Verified`,
+`Source Type`, `Scheme Status`, and `Exclusions`. JSON may be a list or an
+object containing `schemes`; CSV uses these names as headers. Imports validate
+required columns, dates, booleans, rules and duplicates, then upsert scheme
+records, retain source metadata, and create searchable document chunks.
+Eligibility rule trees may be supplied in an additional `rule` field.
+
+The local SQL database stores chunk text, metadata and optional embedding
+vectors. Semantic ranking uses cosine similarity; without embeddings, retrieval
+uses a lexical score. This keeps the SQLite-first project easy to run locally.
+The retrieval layer is isolated so a larger deployment can replace it with
+FAISS or Chroma.
+
+Add local document knowledge to a scheme with:
+
+```bash
+python ingest_documents.py path/to/notification.pdf --scheme-id 1 --source-url https://example.gov.in/notification
+```
+
+PDF, TXT and Markdown are supported. Text extraction and indexing do not make
+a document verified; public answers still require reviewed source evidence.
+The source URL, type, document/chunk IDs, verification state and update date
+are kept with indexed chunks.
+
+Explicit statements in chat can populate structured profile memory (such as
+age, state, student status, education, employment and income). Messages and
+conversations persist. Users can view/edit/delete facts and clear profile
+memory independently from conversation history. The current extractor uses
+simple explicit phrasing and does not save uncertain inferences. Profile
+values are used locally by deterministic eligibility checks and are not sent
+to OpenAI; recent conversation text is sent as context for answer phrasing.
+
+Registration and protected endpoints use Flask's signed session cookie. The
+demo admin is for local development only; do not deploy its credentials.
+
+Import records as JSON using `/api/admin/sources/import` after logging in as an
+administrator. Each record needs scheme metadata plus an HTTPS source URL,
+publisher, title, jurisdiction, and a verbatim supporting excerpt. An optional
+`rule` uses the deterministic rule-tree format described above. Imports are
+pending review; an administrator must compare each excerpt and rule with the
+official source and approve it before it can be used. Use one record per
+scheme/source pair. Re-importing the same scheme and URL is idempotent.
+
+Example record:
+
+```json
+{
+  "name": "Example State Scheme",
+  "description": "Summary copied from an official notification.",
+  "department": "Example Department",
+  "government_level": "STATE",
+  "category": "Education",
+  "benefits": "As stated in the official notification.",
+  "source_url": "https://example.gov.in/scheme-notification",
+  "source_title": "Scheme notification",
+  "publisher": "Example Department",
+  "excerpt": "Exact relevant text from the official notification.",
+  "jurisdiction": "Example State",
+  "rule": {
+    "logic": "AND",
+    "conditions": [
+      { "field": "age", "operator": ">=", "value": 18 }
+    ]
+  }
+}
+```
+
+This is an ingestion and review foundation, not a complete or automatically
+maintained catalogue of Indian schemes. Coverage across all states and union
+territories requires acquiring, importing, reviewing, and periodically
+rechecking each official source. Fine-tuning changes response style, not the
+source of policy facts; use a fine-tuned model ID only for a model trained on
+curated conversational examples. Never put changing scheme rules or citizen
+profiles in fine-tuning data.
+
+The `/` page provides a minimal login, profile, and chat interface. To submit
+a fine-tuning job, prepare a JSONL file of curated, de-identified
+`{"messages":[...]}` examples with assistant answers ending each conversation,
+set `OPENAI_FINE_TUNE_BASE_MODEL`, and run:
+
+```bash
+python train_chat_model.py path/to/curated-examples.jsonl
+```
+
+This uploads the supplied file to OpenAI and starts a paid fine-tuning job.
+Only include examples that teach safe conversation style and source citation;
+do not include citizen details or policy facts that can change. After training,
+set `OPENAI_CHAT_MODEL` to the returned fine-tuned model ID. Training is not
+run automatically, and no API key or training corpus is included in this repo.
 
 ## Demo Credentials
 
@@ -261,20 +415,17 @@ Citizen accounts are created via the registration page.
 
 ## Demo Workflow
 
-A complete demonstration of the memory-agent behavior, end to end:
+1. Configure `SECRET_KEY` and `OPENAI_API_KEY`, then start the app.
+2. Sign in as the development admin and import records copied from official
+   sources. Imported records remain pending until reviewed.
+3. Review the source and its eligibility rule, then mark the source `VERIFIED`.
+4. Register as a citizen, save profile details, and ask the chat page about
+   schemes or eligibility.
+5. Log out and back in; the saved profile remains available to the rule engine.
 
-1. **Register** as a citizen.
-2. **Enter profile details** once — age, state, occupation, annual income, education, family size.
-3. **Save** the profile — it's now persisted as memory.
-4. **Ask the agent**: *"What schemes am I eligible for?"* — the agent retrieves memory, evaluates it against all active schemes, and returns explained results.
-5. **Log out, then log back in.** Ask again — the agent answers immediately from memory without re-asking any profile question.
-6. **Admin adds a new scheme.**
-7. **Admin runs re-evaluation** from the admin dashboard.
-8. **Citizen logs in** and sees a *"You are newly eligible!"* notification for the new scheme.
-9. **Admin changes an existing scheme's eligibility rule** (e.g. raises the income limit), creating a new rule version.
-10. **Re-evaluation runs automatically**; the citizen's eligibility history now shows the status change alongside the old and new rule versions.
-
-This flow is the core proof-of-concept for the entire project: **memory persists, reasoning is deterministic, and the agent proactively surfaces change** — without ever re-asking a question it already has the answer to.
+This demo flow covers the implemented chat and memory foundation. National
+coverage depends on building and maintaining a reviewed data catalogue; no
+real all-India corpus is bundled.
 
 ## Testing
 
@@ -282,10 +433,10 @@ This flow is the core proof-of-concept for the entire project: **memory persists
 python -m pytest tests/
 ```
 
-Covers:
-- Memory persistence — save, retrieve, update, missing-attribute detection
-- Rule engine — `AND`/`OR`/`NOT` logic, all supported operators, missing-field handling
-- Eligibility-change detection — all four status transition combinations (`ELIGIBLE ↔ NOT_ELIGIBLE`, etc.), ensuring only *meaningful* transitions trigger notifications
+Covers profile memory, deterministic rules and missing fields, authentication,
+source review, chat citations, import validation, duplicate detection, demo
+isolation, retrieval, and conversation/memory controls. Run with
+`python -m pytest -q`.
 
 ## Team
 

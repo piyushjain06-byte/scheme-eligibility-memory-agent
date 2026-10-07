@@ -14,7 +14,7 @@ Design notes for the team:
   can notify a user even before their profile is fully filled in.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -43,6 +43,8 @@ class User(db.Model):
         cascade="all, delete-orphan",
         order_by="Notification.created_at.desc()",
     )
+    conversations = db.relationship("Conversation", backref="user", cascade="all, delete-orphan")
+    memory_facts = db.relationship("UserMemory", backref="user", cascade="all, delete-orphan")
 
     def set_password(self, raw_password: str) -> None:
         self.password_hash = generate_password_hash(raw_password)
@@ -171,6 +173,19 @@ class Scheme(db.Model):
     benefits = db.Column(db.Text)
     application_url = db.Column(db.String(255))
     active = db.Column(db.Boolean, default=True)
+    ministry = db.Column(db.String(160))
+    objective = db.Column(db.Text)
+    eligibility = db.Column(db.Text)
+    required_documents = db.Column(db.JSON, default=list)
+    application_process = db.Column(db.Text)
+    source_url = db.Column(db.String(1000))
+    last_updated = db.Column(db.Date)
+    source_verified = db.Column(db.Boolean, default=False, nullable=False)
+    source_type = db.Column(db.String(40))
+    scheme_status = db.Column(db.String(40), default="ACTIVE")
+    exclusions = db.Column(db.Text)
+    is_demo = db.Column(db.Boolean, default=False, nullable=False)
+    last_verified = db.Column(db.DateTime)
     rule_version = db.Column(db.Integer, default=1)  # convenience pointer to current rule version
 
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -186,6 +201,7 @@ class Scheme(db.Model):
         "EligibilityEvaluation", backref="scheme", cascade="all, delete-orphan"
     )
     notifications = db.relationship("Notification", backref="scheme")
+    documents = db.relationship("GovernmentDocument", backref="scheme", cascade="all, delete-orphan")
 
     def latest_rule(self):
         """Return the highest-version EligibilityRule for this scheme, or None."""
@@ -205,6 +221,19 @@ class Scheme(db.Model):
             "application_url": self.application_url,
             "active": self.active,
             "rule_version": self.rule_version,
+            "ministry": self.ministry,
+            "objective": self.objective,
+            "eligibility": self.eligibility,
+            "required_documents": self.required_documents or [],
+            "application_process": self.application_process,
+            "source_url": self.source_url,
+            "last_updated": self.last_updated.isoformat() if self.last_updated else None,
+            "source_verified": self.source_verified,
+            "source_type": self.source_type,
+            "scheme_status": self.scheme_status,
+            "exclusions": self.exclusions,
+            "is_demo": self.is_demo,
+            "last_verified": self.last_verified.isoformat() if self.last_verified else None,
         }
         if include_rule:
             rule = self.latest_rule()
@@ -232,6 +261,53 @@ class EligibilityRule(db.Model):
 
     def __repr__(self):
         return f"<EligibilityRule scheme_id={self.scheme_id} v{self.version}>"
+
+
+class SchemeSource(db.Model):
+    """Official-source evidence used to ground answers about a scheme."""
+
+    __tablename__ = "scheme_sources"
+
+    id = db.Column(db.Integer, primary_key=True)
+    scheme_id = db.Column(db.Integer, db.ForeignKey("schemes.id"), nullable=False)
+    source_url = db.Column(db.String(1000), nullable=False)
+    source_title = db.Column(db.String(255), nullable=False)
+    publisher = db.Column(db.String(255), nullable=False)
+    excerpt = db.Column(db.Text, nullable=False)
+    jurisdiction = db.Column(db.String(100), nullable=False)
+    proposed_rule_json = db.Column(db.JSON)
+    rule_version = db.Column(db.Integer, nullable=False, default=0)
+    status = db.Column(db.String(20), nullable=False, default="PENDING")
+    retrieved_at = db.Column(
+        db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+    reviewed_at = db.Column(db.DateTime)
+    review_notes = db.Column(db.Text)
+    source_type = db.Column(db.String(40), default="OFFICIAL_PAGE")
+    last_verified = db.Column(db.DateTime)
+
+    scheme = db.relationship("Scheme", backref=db.backref("sources", cascade="all, delete-orphan"))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "scheme_id": self.scheme_id,
+            "source_url": self.source_url,
+            "source_title": self.source_title,
+            "publisher": self.publisher,
+            "jurisdiction": self.jurisdiction,
+            "excerpt": self.excerpt,
+            "rule_version": self.rule_version,
+            "status": self.status,
+            "retrieved_at": self.retrieved_at.isoformat() if self.retrieved_at else None,
+            "reviewed_at": self.reviewed_at.isoformat() if self.reviewed_at else None,
+            "review_notes": self.review_notes,
+            "source_type": self.source_type,
+            "last_verified": self.last_verified.isoformat() if self.last_verified else None,
+        }
+
+    def __repr__(self):
+        return f"<SchemeSource scheme_id={self.scheme_id} status={self.status}>"
 
 
 class EligibilityEvaluation(db.Model):
@@ -294,3 +370,76 @@ class Notification(db.Model):
 
     def __repr__(self):
         return f"<Notification {self.notification_type} for user={self.citizen_id}>"
+
+
+class GovernmentDocument(db.Model):
+    """Source document text retained for retrieval and citation tracking."""
+
+    __tablename__ = "government_documents"
+    id = db.Column(db.Integer, primary_key=True)
+    scheme_id = db.Column(db.Integer, db.ForeignKey("schemes.id"), nullable=False, index=True)
+    title = db.Column(db.String(255), nullable=False)
+    source_url = db.Column(db.String(1000))
+    source_type = db.Column(db.String(40))
+    content_hash = db.Column(db.String(64), nullable=False, index=True)
+    content = db.Column(db.Text, nullable=False)
+    verification_status = db.Column(db.String(20), nullable=False, default="DEMO")
+    is_current = db.Column(db.Boolean, nullable=False, default=True, index=True)
+    last_updated = db.Column(db.Date)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    chunks = db.relationship("DocumentChunk", backref="document", cascade="all, delete-orphan")
+
+
+class DocumentChunk(db.Model):
+    __tablename__ = "document_chunks"
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey("government_documents.id"), nullable=False, index=True)
+    chunk_index = db.Column(db.Integer, nullable=False)
+    text = db.Column(db.Text, nullable=False)
+    embedding = db.Column(db.JSON)
+    __table_args__ = (db.UniqueConstraint("document_id", "chunk_index"),)
+
+
+class Conversation(db.Model):
+    __tablename__ = "conversations"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    title = db.Column(db.String(160))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    messages = db.relationship("Message", backref="conversation", cascade="all, delete-orphan", order_by="Message.created_at")
+
+
+class Message(db.Model):
+    __tablename__ = "messages"
+    id = db.Column(db.Integer, primary_key=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey("conversations.id"), nullable=False, index=True)
+    role = db.Column(db.String(20), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class UserMemory(db.Model):
+    """Explicit user-provided durable fact; inferred values are not stored here."""
+    __tablename__ = "user_memory"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    key = db.Column(db.String(80), nullable=False)
+    value = db.Column(db.JSON, nullable=False)
+    source_message_id = db.Column(db.Integer, db.ForeignKey("messages.id"))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    __table_args__ = (db.UniqueConstraint("user_id", "key"),)
+
+
+class IngestionRun(db.Model):
+    """Small audit trail for admin-triggered imports and their validation errors."""
+    __tablename__ = "ingestion_runs"
+    id = db.Column(db.Integer, primary_key=True)
+    initiated_by = db.Column(db.Integer, db.ForeignKey("users.id"))
+    source_name = db.Column(db.String(255), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="RUNNING")
+    result = db.Column(db.JSON)
+    error = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    finished_at = db.Column(db.DateTime)
