@@ -1,78 +1,107 @@
-"""Conservative extraction of plainly stated, scheme-relevant profile facts."""
-import re
+"""Saving, listing, confirming and forgetting facts the citizen has stated (extraction itself lives in extraction.py)."""
+import logging
+from datetime import datetime
 
 from database.db import db
 from database.models import CitizenProfile, UserMemory
-from agent.memory import update_profile
+from agent import memory as profile_memory
+from agent.extraction import LLM_SYSTEM_PROMPT, extract_explicit_facts, parse_llm_facts  # noqa: F401  (re-exported)
+from agent.normalize import INDIAN_STATES  # noqa: F401  (re-exported for older imports)
 
-INDIAN_STATES = ["Andaman and Nicobar Islands", "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chandigarh", "Chhattisgarh", "Dadra and Nagar Haveli and Daman and Diu", "Delhi", "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jammu and Kashmir", "Jharkhand", "Karnataka", "Kerala", "Ladakh", "Lakshadweep", "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Puducherry", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal"]
+logger = logging.getLogger(__name__)
 
-
-def extract_explicit_facts(text):
-    facts = {}
-    age = re.search(r"\b(?:i am|i'm|aged)\s+(?:a\s+)?(\d{1,3})\s*(?:[- ]years?[- ]old|years? old)?\b", text, re.I)
-    if age and 0 <= int(age.group(1)) <= 130:
-        facts["age"] = int(age.group(1))
-    income = re.search(r"\b(?:my\s+)?(?:family\s+)?income\s+(?:(?:is|of)\s+)?(?:around|about)?\s*(?:₹|rs\.?\s*)?([\d,.]+)\s*(lakh|lakhs|l|crore|crores)?", text, re.I)
-    if income:
-        amount = float(income.group(1).replace(",", ""))
-        multiplier = 100000 if income.group(2) and income.group(2).lower().startswith("l") else (10000000 if income.group(2) else 1)
-        facts["annual_income"] = int(amount * multiplier)
-    if re.search(r"\b(?:i am|i'm)\s+not\s+(?:a\s+)?student\b", text, re.I):
-        facts["student_status"] = False
-    elif re.search(r"\b(?:i am|i'm)\s+(?:(?:a|an)\s+)?(?:\d{1,3}[- ]year[- ]old\s+)?(?:(?:engineering|medical|law|arts|science|commerce|diploma)\s+)?student\b|\bi am studying\b", text, re.I):
-        facts["student_status"] = True
-    if re.search(r"\b(?:i am|i'm)\s+(?:currently\s+)?(?:unemployed|not employed)\b", text, re.I):
-        facts["employment_status"] = "unemployed"
-    education = re.search(r"\b(?:i am|i'm)\s+(?:(?:a|an)\s+)?(?:\d{1,3}[- ]year[- ]old\s+)?(engineering|medical|law|arts|science|commerce|diploma)\s+student\b|\bi study\s+(engineering|medical|law|arts|science|commerce|diploma)\b", text, re.I)
-    if education:
-        facts["education_level"] = (education.group(1) or education.group(2)).lower()
-    states = "|".join(re.escape(state) for state in sorted(INDIAN_STATES, key=len, reverse=True))
-    origin = re.search(rf"\b(?:i am|i'm)\b[^.!?]{{0,80}}\bfrom\s+({states})\b|\b(?:i live in|i'm living in|i am living in|i'm based in|i am based in)\s+({states})\b", text, re.I)
-    if origin:
-        stated = (origin.group(1) or origin.group(2)).casefold()
-        facts["state"] = next(value for value in INDIAN_STATES if value.casefold() == stated)
-    return facts
+# Facts that quietly go out of date. Age is exempt when a date of birth is stored.
+STALE_AFTER_DAYS = {"age": 180, "annual_income": 365, "employment_status": 365, "occupation": 365, "family_size": 365}
 
 
-def save_explicit_facts(user_id, text, message_id=None):
-    facts = extract_explicit_facts(text)
-    if not facts:
+def extract_facts_with_llm(api_key, model, text):
+    """Optional second extractor. Its output passes through the same validation as the regex path."""
+    from openai import OpenAI
+    response = OpenAI(api_key=api_key).chat.completions.create(
+        model=model, temperature=0,
+        messages=[{"role": "system", "content": LLM_SYSTEM_PROMPT}, {"role": "user", "content": text}],
+    )
+    return parse_llm_facts(response.choices[0].message.content or "", text)
+
+
+def _snapshot(user_id):
+    profile = profile_memory.get_profile(user_id)
+    if profile is None:
         return {}
-    update_profile(user_id, **facts)
-    for key, value in facts.items():
-        fact = UserMemory.query.filter_by(user_id=user_id, key=key).first()
-        if fact is None:
-            fact = UserMemory(user_id=user_id, key=key, value=value)
-            db.session.add(fact)
-        else:
-            fact.value = value
-        fact.source_message_id = message_id
-    db.session.commit()
-    return facts
+    data = profile.to_memory_dict()
+    data["date_of_birth"] = profile.date_of_birth.isoformat() if profile.date_of_birth else None
+    return data
+
+
+def save_explicit_facts(user_id, text, message_id=None, llm=None):
+    """
+    Save plainly stated facts and return what actually changed, as
+    [{"key", "value", "previous"}], so the chat can show "Remembered: age 21" and let the user correct it.
+    `llm` = {"api_key", "model"} switches on the optional LLM extractor (regex facts take precedence).
+    """
+    facts = extract_explicit_facts(text)
+    if llm:
+        try:
+            facts = {**extract_facts_with_llm(llm["api_key"], llm["model"], text), **facts}
+        except Exception:
+            logger.exception("LLM memory extraction failed; using rule-based extraction only")
+    if not facts:
+        return []
+    before = _snapshot(user_id)
+    profile_memory.update_profile(user_id, source="chat", source_message_id=message_id, **facts)
+    after = _snapshot(user_id)
+    return [{"key": key, "value": after.get(key), "previous": before.get(key)}
+            for key in facts if after.get(key) != before.get(key)]
 
 
 def list_memory(user_id):
-    return [{"id": row.id, "key": row.key, "value": row.value,
-             "source_message_id": row.source_message_id,
-             "updated_at": row.updated_at.isoformat() if row.updated_at else None}
-            for row in UserMemory.query.filter_by(user_id=user_id).order_by(UserMemory.key).all()]
+    profile = profile_memory.get_or_create_profile(user_id)
+    profile_memory.sync_memory_rows(profile)  # also picks up facts saved before metadata existed
+    db.session.commit()
+    now = datetime.utcnow()
+    result = []
+    for row in UserMemory.query.filter_by(user_id=user_id).order_by(UserMemory.key).all():
+        checked = row.last_confirmed_at or row.updated_at or row.created_at
+        limit = STALE_AFTER_DAYS.get(row.key)
+        stale = bool(limit and checked and (now - checked).days >= limit
+                     and not (row.key == "age" and profile.date_of_birth))
+        result.append({
+            "id": row.id, "key": row.key, "value": row.value, "source": row.source,
+            "source_message_id": row.source_message_id, "confirmed": bool(row.confirmed), "stale": stale,
+            "previous_value": row.previous_value,
+            "last_confirmed_at": row.last_confirmed_at.isoformat() if row.last_confirmed_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        })
+    return result
+
+
+def confirm_memory(user_id, key):
+    """Mark a remembered fact as checked by the citizen. Returns False if there is no such fact."""
+    profile_memory.sync_memory_rows(profile_memory.get_or_create_profile(user_id))
+    row = UserMemory.query.filter_by(user_id=user_id, key=key).first()
+    if row is None:
+        return False
+    row.confirmed = True
+    row.last_confirmed_at = datetime.utcnow()
+    db.session.commit()
+    return True
 
 
 def delete_memory(user_id, key=None):
+    """Forget one fact (or all). The profile value is cleared too, because the profile is the source of truth."""
     query = UserMemory.query.filter_by(user_id=user_id)
     if key:
         query = query.filter_by(key=key)
     count = query.delete(synchronize_session=False)
-    if key:
-        # Clearing a fact clears the corresponding structured profile field too.
-        profile = CitizenProfile.query.filter_by(user_id=user_id).first()
-        if profile and key in CitizenProfile.RULE_FIELDS:
-            setattr(profile, key, None)
-    else:
-        profile = CitizenProfile.query.filter_by(user_id=user_id).first()
-        if profile:
-            for field in CitizenProfile.RULE_FIELDS:
-                setattr(profile, field, None)
+    profile = CitizenProfile.query.filter_by(user_id=user_id).first()
+    if profile:
+        for name in ([key] if key else profile_memory.MEMORY_KEYS):
+            if name == "date_of_birth":
+                profile.date_of_birth = None
+            elif name == "age":
+                profile.age = None
+                profile.date_of_birth = None  # an age derived from a date of birth goes with it
+            elif name in CitizenProfile.RULE_FIELDS:
+                setattr(profile, name, None)
     db.session.commit()
     return count

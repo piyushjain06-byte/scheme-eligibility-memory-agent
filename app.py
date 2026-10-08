@@ -23,8 +23,10 @@ def create_app(config_class=Config):
     from database import models  # noqa: F401
 
     from routes.api import api_bp
+    from routes.account import account_bp
 
     app.register_blueprint(api_bp, url_prefix="/api")
+    app.register_blueprint(account_bp, url_prefix="/api")
 
     @app.route("/")
     def index():

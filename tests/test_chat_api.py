@@ -15,6 +15,7 @@ class TestConfig(Config):
     TESTING = True
     OPENAI_API_KEY = "test-api-key"
     OPENAI_CHAT_MODEL = "ft:test-model"
+    LLM_MEMORY_EXTRACTION = False
 
 
 @pytest.fixture
@@ -35,7 +36,7 @@ def client(app):
 def _register(client, username="citizen", email="citizen@example.test"):
     return client.post(
         "/api/register",
-        json={"username": username, "email": email, "password": "long-test-password"},
+        json={"username": username, "email": email, "password": "long-test-password", "consent": True},
     )
 
 
@@ -47,8 +48,8 @@ def _make_admin():
     return admin
 
 
-def _official_record(name="Sample State Education Scheme"):
-    return {
+def _official_record(name="Sample State Education Scheme", **overrides):
+    record = {
         "name": name,
         "description": "Education assistance for eligible students.",
         "department": "Department of Education",
@@ -68,6 +69,39 @@ def _official_record(name="Sample State Education Scheme"):
             ],
         },
     }
+    record.update(overrides)
+    return record
+
+
+def _admin_client(app):
+    with app.app_context():
+        admin = _make_admin()
+        admin_client = app.test_client()
+        admin_client.post("/api/login", json={"username": admin.username, "password": "long-test-password"})
+    return admin_client
+
+
+def _publish(app, record):
+    """Import + approve one source as admin; returns the admin client."""
+    admin_client = _admin_client(app)
+    imported = admin_client.post("/api/admin/sources/import", json={"records": [record]}).get_json()
+    admin_client.post(f"/api/admin/sources/{imported['sources'][0]['id']}/review", json={"status": "VERIFIED"})
+    return admin_client
+
+
+def _install_fake_openai(monkeypatch, captured):
+    class FakeOpenAI:
+        def __init__(self, api_key):
+            assert api_key == "test-api-key"
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="You qualify [S1]."))]
+            )
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
 
 
 def test_register_profile_update_and_login_memory(client):
@@ -114,6 +148,8 @@ def test_scheme_import_is_pending_until_admin_review(client, app):
     source = imported.get_json()["sources"][0]
     assert source["status"] == "PENDING"
     assert source["rule_version"] == 0
+    # The reviewer sees the proposed rule in plain words next to the excerpt.
+    assert source["proposed_rule_text"] == "(age between 18 and 25 AND student_status == True)"
     with app.app_context():
         scheme = Scheme.query.filter_by(name="Sample State Education Scheme").one()
         assert scheme.latest_rule() is None
@@ -159,46 +195,29 @@ def test_import_rejects_rule_values_incompatible_with_profile_fields(client, app
     assert "annual_income" in response.get_json()["error"]
 
 
+def test_state_scheme_import_requires_a_real_state(client, app):
+    admin_client = _admin_client(app)
+    response = admin_client.post("/api/admin/sources/import",
+                                 json={"records": [_official_record(jurisdiction="Somewhere")]})
+    assert response.status_code == 400
+    assert "jurisdiction" in response.get_json()["error"]
+
+
 def test_chat_uses_verified_evidence_and_never_sends_profile_data(client, app, monkeypatch):
     _register(client)
     client.put(
         "/api/profile",
-        json={"age": 20, "student_status": True, "annual_income": 123456},
+        json={"age": 20, "student_status": True, "annual_income": 123456, "state": "Karnataka"},
     )
     client.post("/api/logout")
-    with app.app_context():
-        admin = _make_admin()
-        source_response = app.test_client()
-        source_response.post(
-            "/api/login",
-            json={"username": admin.username, "password": "long-test-password"},
-        )
-        imported = source_response.post(
-            "/api/admin/sources/import", json={"records": [_official_record()]}
-        ).get_json()
-        source_id = imported["sources"][0]["id"]
-        source_response.post(
-            f"/api/admin/sources/{source_id}/review", json={"status": "VERIFIED"}
-        )
+    _publish(app, _official_record())
 
     client.post(
         "/api/login",
         json={"username": "citizen", "password": "long-test-password"},
     )
     captured = {}
-
-    class FakeOpenAI:
-        def __init__(self, api_key):
-            assert api_key == "test-api-key"
-            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
-
-        def create(self, **kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content="You qualify [S1]."))]
-            )
-
-    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+    _install_fake_openai(monkeypatch, captured)
     response = client.post("/api/chat", json={"message": "Am I eligible for schemes?"})
 
     assert response.status_code == 200
@@ -207,9 +226,50 @@ def test_chat_uses_verified_evidence_and_never_sends_profile_data(client, app, m
     assert result["citations"][0]["url"] == "https://education.gov.in/schemes/sample"
     assert result["citations"][0]["citation"] == "S1"
     assert result["answer"] == "You qualify [S1]."
+    assert result["disclaimer"]
     sent_prompt = str(captured["messages"])
     assert "123456" not in sent_prompt
     assert "annual_income" not in sent_prompt
+    # The exact values (age 20, income) are never sent, only which criteria were met.
+    assert "actual" not in sent_prompt
+    assert "(actual" not in sent_prompt
+
+
+def test_state_scheme_is_not_eligible_for_residents_of_another_state(client, app, monkeypatch):
+    _register(client)
+    client.put("/api/profile", json={"age": 20, "student_status": True, "state": "maharashtra"})
+    client.post("/api/logout")
+    _publish(app, _official_record())
+    client.post("/api/login", json={"username": "citizen", "password": "long-test-password"})
+    _install_fake_openai(monkeypatch, {})
+    result = client.post("/api/chat", json={"message": "Am I eligible for schemes?"}).get_json()
+    row = result["eligibility"][0]
+    assert row["status"] == "NOT_ELIGIBLE"
+    assert row["failed_conditions"][-1]["field"] == "state"
+
+
+def test_missing_state_is_asked_for_instead_of_assumed(client, app, monkeypatch):
+    _register(client)
+    client.put("/api/profile", json={"age": 20, "student_status": True})
+    client.post("/api/logout")
+    _publish(app, _official_record())
+    client.post("/api/login", json={"username": "citizen", "password": "long-test-password"})
+    _install_fake_openai(monkeypatch, {})
+    row = client.post("/api/chat", json={"message": "Am I eligible for schemes?"}).get_json()["eligibility"][0]
+    assert row["status"] == "NEEDS_INFORMATION" and "state" in row["missing_fields"]
+
+
+def test_scheme_without_a_rule_is_reported_as_not_checkable(client, app, monkeypatch):
+    _register(client)
+    client.post("/api/logout")
+    record = _official_record(manual_checks=["Hold a BPL ration card"])
+    record.pop("rule")
+    _publish(app, record)
+    client.post("/api/login", json={"username": "citizen", "password": "long-test-password"})
+    _install_fake_openai(monkeypatch, {})
+    row = client.post("/api/chat", json={"message": "Am I eligible for schemes?"}).get_json()["eligibility"][0]
+    assert row["status"] == "CANNOT_CHECK"
+    assert row["manual_checks"] == ["Hold a BPL ration card"]
 
 
 def test_chat_requires_login_and_verified_knowledge(client):
@@ -222,6 +282,7 @@ def test_chat_requires_login_and_verified_knowledge(client):
 def test_profile_rejects_invalid_types_and_chat_rejects_oversized_messages(client):
     _register(client)
     assert client.put("/api/profile", json={"age": "twenty"}).status_code == 400
+    assert client.put("/api/profile", json={"date_of_birth": "31-02-2000"}).status_code == 400
     assert client.post("/api/chat", json={"message": "x" * 2001}).status_code == 400
 
 

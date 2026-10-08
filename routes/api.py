@@ -1,6 +1,6 @@
 """Session-based API for citizen memory, chat, and source review."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from functools import wraps
 import math
 from urllib.parse import urlparse
@@ -15,8 +15,11 @@ from agent.chat import (
     KnowledgeBaseUnavailableError,
     answer_chat,
 )
+from agent.eligibility import rule_to_text
+from agent.normalize import canonical_state
+from agent.ratelimit import rate_limit
 from agent.rule_engine import InvalidRuleError, evaluate_rule
-from agent.user_memory import delete_memory, list_memory, save_explicit_facts
+from agent.user_memory import confirm_memory, delete_memory, list_memory, save_explicit_facts
 
 api_bp = Blueprint("api", __name__)
 
@@ -63,6 +66,15 @@ def _profile_validation_error(fields):
                 or value > 10**15
             ):
                 return "annual_income must be a finite non-negative number"
+        elif name == "date_of_birth":
+            try:
+                dob = date.fromisoformat(value) if isinstance(value, str) else None
+            except ValueError:
+                dob = None
+            if dob is None:
+                return "date_of_birth must be a date in YYYY-MM-DD format"
+            if dob > date.today() or date.today().year - dob.year > 130:
+                return "date_of_birth is out of range"
         elif not isinstance(value, str) or len(value) > PROFILE_STRING_LIMITS[name]:
             return f"{name} must be a string no longer than {PROFILE_STRING_LIMITS[name]} characters"
     return None
@@ -97,6 +109,7 @@ def admin_required(view):
 
 
 @api_bp.post("/register")
+@rate_limit("register", "RATE_LIMIT_REGISTER", 5)
 def register():
     body = _json_body()
     if body is None:
@@ -110,12 +123,16 @@ def register():
         return jsonify(error="Password must be between 12 and 256 characters"), 400
     if len(username.strip()) > 80 or len(email.strip()) > 120:
         return jsonify(error="username or email is too long"), 400
+    consent = body.get("consent") is True
+    if current_app.config.get("REQUIRE_CONSENT", False) and not consent:
+        return jsonify(error="You must agree to the storage of your profile details to register"), 400
     if User.query.filter(
         db.or_(User.username == username.strip(), User.email == email.strip().lower())
     ).first():
         return jsonify(error="Username or email is already registered"), 409
 
-    user = User(username=username.strip(), email=email.strip().lower(), role="citizen")
+    user = User(username=username.strip(), email=email.strip().lower(), role="citizen",
+                consent_at=datetime.utcnow() if consent else None)
     user.set_password(password)
     db.session.add(user)
     db.session.commit()
@@ -125,6 +142,7 @@ def register():
 
 
 @api_bp.post("/login")
+@rate_limit("login", "RATE_LIMIT_LOGIN", 10)
 def login():
     body = _json_body()
     if body is None:
@@ -163,19 +181,20 @@ def update_profile():
     if body is None:
         return jsonify(error="A JSON object is required"), 400
     allowed = set(CitizenProfile.RULE_FIELDS)
-    allowed.update({"full_name"})
+    allowed.update({"full_name", "date_of_birth"})
     unknown = set(body) - allowed
     if unknown:
         return jsonify(error="Unknown profile fields", fields=sorted(unknown)), 400
     validation_error = _profile_validation_error(body)
     if validation_error:
         return jsonify(error=validation_error), 400
-    profile = memory.update_profile(_authenticated_user().id, **body)
+    profile = memory.update_profile(_authenticated_user().id, source="profile", **body)
     return jsonify(profile=profile.to_dict())
 
 
 @api_bp.post("/chat")
 @login_required
+@rate_limit("chat", "RATE_LIMIT_CHAT", 20, per_user=True)
 def chat():
     body = _json_body()
     if body is None or not isinstance(body.get("message"), str):
@@ -199,7 +218,11 @@ def chat():
     user_message = Message(conversation_id=conversation.id, role="user", content=body["message"])
     db.session.add(user_message)
     db.session.flush()
-    save_explicit_facts(user_id, body["message"], user_message.id)
+    llm = None
+    if current_app.config.get("LLM_MEMORY_EXTRACTION") and current_app.config.get("OPENAI_API_KEY"):
+        llm = {"api_key": current_app.config["OPENAI_API_KEY"],
+               "model": current_app.config.get("OPENAI_EXTRACTION_MODEL", "gpt-4o-mini")}
+    remembered = save_explicit_facts(user_id, body["message"], user_message.id, llm=llm)
     try:
         result = answer_chat(
             user_id=user_id,
@@ -208,16 +231,20 @@ def chat():
             model=current_app.config.get("OPENAI_CHAT_MODEL"),
             history=history,
             embedding_model=current_app.config.get("EMBEDDING_MODEL", "text-embedding-3-small"),
+            focus_scheme_ids=conversation.focus_scheme_ids,
         )
     except ChatConfigurationError as exc:
-        return jsonify(error=str(exc)), 503
+        return jsonify(error=str(exc), remembered=remembered), 503
     except KnowledgeBaseUnavailableError as exc:
-        return jsonify(error=str(exc)), 503
+        return jsonify(error=str(exc), remembered=remembered), 503
     except ValueError as exc:
-        return jsonify(error=str(exc)), 400
+        return jsonify(error=str(exc), remembered=remembered), 400
+    if result.get("focus_scheme_ids"):
+        conversation.focus_scheme_ids = result["focus_scheme_ids"]
     db.session.add(Message(conversation_id=conversation.id, role="assistant", content=result["answer"]))
     db.session.commit()
-    return jsonify({**result, "conversation_id": conversation.id, "memory": list_memory(user_id)})
+    return jsonify({**result, "conversation_id": conversation.id, "memory": list_memory(user_id),
+                    "remembered": remembered})
 
 
 @api_bp.get("/memory")
@@ -244,12 +271,20 @@ def delete_memory_fact(key):
     return jsonify(deleted=count)
 
 
+@api_bp.post("/memory/<string:key>/confirm")
+@login_required
+def confirm_memory_fact(key):
+    if not confirm_memory(_authenticated_user().id, key):
+        return jsonify(error="No remembered fact with that key"), 404
+    return jsonify(confirmed=key)
+
+
 @api_bp.put("/memory/<string:key>")
 @login_required
 def update_memory_fact(key):
     user = _authenticated_user()
     body = _json_body()
-    if key not in CitizenProfile.RULE_FIELDS or body is None or "value" not in body:
+    if key not in memory.MEMORY_KEYS or body is None or "value" not in body:
         return jsonify(error="A known profile key and JSON value are required"), 400
     value = body["value"]
     if value is None:
@@ -257,15 +292,9 @@ def update_memory_fact(key):
     error = _profile_validation_error({key: value})
     if error:
         return jsonify(error=error), 400
-    memory.update_profile(user.id, **{key: value})
+    memory.update_profile(user.id, source="profile", **{key: value})
     fact = UserMemory.query.filter_by(user_id=user.id, key=key).first()
-    if fact is None:
-        fact = UserMemory(user_id=user.id, key=key, value=value)
-        db.session.add(fact)
-    else:
-        fact.value = value
-    db.session.commit()
-    return jsonify(fact={"key": key, "value": value})
+    return jsonify(fact={"key": key, "value": fact.value if fact else value})
 
 
 @api_bp.get("/conversations")
@@ -314,6 +343,7 @@ def review_source(source_id):
     parsed_url = urlparse(source.source_url)
     if status == "VERIFIED" and parsed_url.scheme != "https":
         return jsonify(error="Only HTTPS source URLs can be verified"), 400
+    new_rule_created = False
     if (
         status == "VERIFIED"
         and source.status != "VERIFIED"
@@ -332,6 +362,7 @@ def review_source(source_id):
         )
         source.rule_version = version
         source.scheme.rule_version = version
+        new_rule_created = True
     source.status = status
     source.reviewed_at = datetime.now(timezone.utc)
     source.review_notes = notes.strip() or None
@@ -351,7 +382,22 @@ def review_source(source_id):
         GovernmentDocument.query.filter_by(scheme_id=source.scheme_id, source_url=source.source_url).update(
             {"verification_status": "REJECTED"}, synchronize_session=False)
     db.session.commit()
+    if new_rule_created:
+        # Proactive change detection: citizens who now qualify under the newly approved rule are notified.
+        try:
+            from agent.change_detection import reevaluate_scheme as run_reevaluation
+            run_reevaluation(source.scheme)
+        except Exception:
+            db.session.rollback()
+            current_app.logger.exception("Automatic re-evaluation after source approval failed")
     return jsonify(source=source.to_dict())
+
+
+def _source_for_review(source):
+    """Source record plus a plain-English rendering of the proposed rule, to compare with the excerpt."""
+    rule = source.proposed_rule_json
+    return {**source.to_dict(), "scheme": source.scheme.name, "manual_checks": source.scheme.manual_checks or [],
+            "proposed_rule_json": rule, "proposed_rule_text": rule_to_text(rule) if rule else None}
 
 
 @api_bp.get("/admin/sources")
@@ -366,12 +412,7 @@ def list_sources():
         .limit(100)
         .all()
     )
-    return jsonify(
-        sources=[
-            {**source.to_dict(), "scheme": source.scheme.name}
-            for source in sources
-        ]
-    )
+    return jsonify(sources=[_source_for_review(source) for source in sources])
 
 
 @api_bp.post("/admin/sources/import")
@@ -397,6 +438,11 @@ def import_sources():
         rule = record.get("rule")
         if rule is not None and not isinstance(rule, dict):
             return jsonify(error=f"Record {index} rule must be an object"), 400
+        manual_checks = record.get("manual_checks")
+        if manual_checks is not None and (
+            not isinstance(manual_checks, list) or any(not isinstance(item, str) for item in manual_checks)
+        ):
+            return jsonify(error=f"Record {index} manual_checks must be a list of strings"), 400
         field_limits = {
             "name": 150,
             "description": 10000,
@@ -415,6 +461,8 @@ def import_sources():
                 return jsonify(error=f"Record {index} field {key} must be at most {limit} characters"), 400
         if len(record["excerpt"]) > 20000:
             return jsonify(error=f"Record {index} excerpt is too long"), 400
+        if str(record.get("government_level", "STATE")).upper() == "STATE" and not canonical_state(record["jurisdiction"]):
+            return jsonify(error=f"Record {index} STATE schemes need a jurisdiction naming the state or union territory"), 400
         if rule is not None:
             try:
                 evaluate_rule(rule, {field: None for field in CitizenProfile.RULE_FIELDS})
@@ -440,11 +488,14 @@ def import_sources():
                     category=record.get("category"),
                     benefits=record.get("benefits"),
                     application_url=record.get("application_url"),
+                    manual_checks=record.get("manual_checks") or [],
                     active=True,
                     rule_version=1,
                 )
                 db.session.add(scheme)
                 db.session.flush()
+            elif record.get("manual_checks") is not None:
+                scheme.manual_checks = record["manual_checks"]
             existing_source = SchemeSource.query.filter_by(
                 scheme_id=scheme.id, source_url=record["source_url"].strip()
             ).first()
@@ -456,13 +507,13 @@ def import_sources():
                 source_title=record["source_title"].strip(),
                 publisher=record["publisher"].strip(),
                 excerpt=record["excerpt"].strip(),
-                jurisdiction=record["jurisdiction"].strip(),
+                jurisdiction=canonical_state(record["jurisdiction"]) or record["jurisdiction"].strip(),
                 proposed_rule_json=record.get("rule"),
                 status="PENDING",
             )
             db.session.add(source)
             db.session.flush()
-            created.append(source.to_dict())
+            created.append(_source_for_review(source))
         db.session.commit()
     except Exception:
         db.session.rollback()
@@ -573,7 +624,17 @@ def reevaluate_scheme(scheme_id):
 @login_required
 def list_notifications():
     rows = Notification.query.filter_by(citizen_id=_authenticated_user().id).order_by(Notification.created_at.desc()).limit(50).all()
-    return jsonify(notifications=[row.to_dict() for row in rows])
+    return jsonify(notifications=[row.to_dict() for row in rows],
+                   unread=sum(1 for row in rows if not row.is_read))
+
+
+@api_bp.post("/notifications/read")
+@login_required
+def mark_notifications_read():
+    updated = Notification.query.filter_by(citizen_id=_authenticated_user().id, is_read=False).update(
+        {"is_read": True}, synchronize_session=False)
+    db.session.commit()
+    return jsonify(updated=updated)
 
 
 def _rule_fields(node):

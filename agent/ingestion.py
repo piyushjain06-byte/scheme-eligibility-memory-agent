@@ -10,6 +10,7 @@ from pathlib import Path
 
 from database.db import db
 from database.models import EligibilityRule, Scheme, SchemeSource
+from agent.normalize import canonical_state
 from agent.rag import index_scheme, ingest_document
 
 ALIASES = {
@@ -26,6 +27,8 @@ ALIASES = {
     "exclusions": "exclusions", "description": "description", "department": "department",
     "government_level": "government_level", "application_url": "application_url",
     "active": "active", "rule": "rule", "is_demo": "is_demo",
+    "jurisdiction": "jurisdiction", "state name": "jurisdiction",
+    "manual checks": "manual_checks", "manual_checks": "manual_checks",
 }
 REQUIRED = ("name", "ministry", "objective", "eligibility", "benefits", "required_documents",
             "application_process", "government_level", "category", "source_url", "last_updated",
@@ -48,6 +51,21 @@ def _bool(value, field):
     raise DatasetValidationError(f"{field} must be true or false")
 
 
+def _string_list(value, field, row_number):
+    """Accept a list, a JSON list string, or a ';'-separated string."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            value = parsed if isinstance(parsed, list) else [value]
+        except (ValueError, TypeError):
+            value = [part.strip() for part in value.split(";") if part.strip()]
+    if not isinstance(value, list):
+        raise DatasetValidationError(f"Row {row_number}: {field} must be a list")
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
 def normalize_record(raw, row_number=1):
     if not isinstance(raw, dict):
         raise DatasetValidationError(f"Row {row_number} must be an object")
@@ -68,18 +86,8 @@ def normalize_record(raw, row_number=1):
                   "source_url", "source_type", "scheme_status", "exclusions", "description", "department"):
         if row.get(field) is not None:
             row[field] = str(row[field]).strip()
-    docs = row.get("required_documents")
-    if isinstance(docs, str):
-        try:
-            parsed = json.loads(docs)
-            docs = parsed if isinstance(parsed, list) else [docs]
-        except (ValueError, TypeError):
-            docs = [part.strip() for part in docs.split(";") if part.strip()]
-    if docs is None:
-        docs = []
-    if not isinstance(docs, list):
-        raise DatasetValidationError(f"Row {row_number}: required_documents must be a list")
-    row["required_documents"] = [str(value).strip() for value in docs if str(value).strip()]
+    row["required_documents"] = _string_list(row.get("required_documents"), "required_documents", row_number)
+    row["manual_checks"] = _string_list(row.get("manual_checks"), "manual_checks", row_number)
     if row.get("last_updated"):
         try:
             row["last_updated"] = date.fromisoformat(str(row["last_updated"])[:10])
@@ -105,6 +113,17 @@ def normalize_record(raw, row_number=1):
         row["government_level"] = "STATE"
     elif level.casefold() == "demo":
         row["government_level"] = "DEMO"
+    # A STATE scheme must say which state it belongs to, otherwise residents of other states could be told
+    # they are eligible.
+    jurisdiction = str(row.get("jurisdiction") or "").strip()
+    if row["government_level"] == "STATE" and not row["is_demo"]:
+        state = canonical_state(jurisdiction)
+        if not state:
+            raise DatasetValidationError(
+                f"Row {row_number}: STATE schemes need a 'jurisdiction' naming the state or union territory")
+        row["jurisdiction"] = state
+    else:
+        row["jurisdiction"] = canonical_state(jurisdiction) or jurisdiction or None
     if row.get("scheme_status"):
         row["scheme_status"] = str(row["scheme_status"]).strip().upper()
     if row.get("rule") == "":
@@ -124,7 +143,9 @@ def normalize_record(raw, row_number=1):
             return set().union(*(fields(child) for child in node.get("conditions", [])))
         unknown = fields(row["rule"]) - set(known)
         if unknown:
-            raise DatasetValidationError(f"Row {row_number}: unknown eligibility rule fields: {', '.join(sorted(unknown))}")
+            raise DatasetValidationError(
+                f"Row {row_number}: unknown eligibility rule fields: {', '.join(sorted(unknown))}. "
+                "List criteria that profile fields cannot express under 'manual_checks' instead.")
     return row
 
 
@@ -179,6 +200,7 @@ def import_records(records, *, embedding_client=None, embedding_model="text-embe
         scheme.eligibility = row.get("eligibility")
         scheme.benefits = row.get("benefits")
         scheme.required_documents = row["required_documents"]
+        scheme.manual_checks = row["manual_checks"]
         scheme.application_process = row.get("application_process")
         scheme.government_level = "DEMO" if is_demo else row.get("government_level")
         scheme.category = row.get("category")
@@ -198,13 +220,15 @@ def import_records(records, *, embedding_client=None, embedding_model="text-embe
             excerpt = "\n".join(filter(None, [scheme.objective, scheme.eligibility, scheme.benefits,
                 "Required documents: " + ", ".join(scheme.required_documents or []), scheme.application_process,
                 "Exclusions: " + scheme.exclusions if scheme.exclusions else None]))
+            jurisdiction = row.get("jurisdiction") or ("India" if scheme.government_level == "CENTRAL" else scheme.government_level or "India")
             if source is None:
                 source = SchemeSource(scheme_id=scheme.id, source_url=scheme.source_url,
                     source_title=scheme.name, publisher=ministry or "Government source",
                     excerpt=excerpt or scheme.name,
-                    jurisdiction=scheme.government_level or "India",
+                    jurisdiction=jurisdiction,
                     source_type=scheme.source_type or "OFFICIAL_PAGE")
                 db.session.add(source)
+            source.jurisdiction = jurisdiction
             source.excerpt = excerpt or scheme.name
             source.status = "VERIFIED" if scheme.source_verified else "PENDING"
             source.proposed_rule_json = row.get("rule") if not scheme.source_verified else None

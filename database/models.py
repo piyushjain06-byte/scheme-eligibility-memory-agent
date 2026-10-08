@@ -2,19 +2,16 @@
 Database models for the Scheme Eligibility Memory Agent.
 
 Design notes for the team:
-- CitizenProfile is the agent's "persistent memory" of the citizen — see
-  to_memory_dict() and missing_fields(), which agent/memory.py will call.
-- EligibilityRule.rule_json stores the actual rule tree consumed by
-  agent/rule_engine.py. It uses SQLAlchemy's JSON type, which SQLAlchemy
-  serializes to/from text automatically on SQLite — you get/set it as a
-  normal Python dict, no manual json.dumps/loads needed.
-- EligibilityEvaluation stores every run of the rule engine so we have
-  history + can diff old vs new status for change detection.
-- Notification.citizen_id points at User.id (not CitizenProfile.id) so we
-  can notify a user even before their profile is fully filled in.
+- CitizenProfile is the single source of truth for the citizen's structured memory. UserMemory rows are a
+  metadata layer on top of it (where a fact came from, whether the user confirmed it, when it was last
+  checked); agent/memory.py keeps the two in sync.
+- Age is derived from date_of_birth when one is known, so it never goes stale.
+- EligibilityRule.rule_json stores the rule tree consumed by agent/rule_engine.py (SQLAlchemy JSON type).
+- EligibilityEvaluation stores runs of the rule engine so old and new status can be diffed.
+- Notification.citizen_id points at User.id (not CitizenProfile.id).
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -30,6 +27,7 @@ class User(db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(20), nullable=False, default="citizen")  # citizen | admin
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    consent_at = db.Column(db.DateTime)  # when the citizen agreed to store their profile details
 
     profile = db.relationship(
         "CitizenProfile",
@@ -62,6 +60,7 @@ class User(db.Model):
             "email": self.email,
             "role": self.role,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "consent_at": self.consent_at.isoformat() if self.consent_at else None,
         }
 
     def __repr__(self):
@@ -88,7 +87,7 @@ class CitizenProfile(db.Model):
     disability_status = db.Column(db.Boolean)
     student_status = db.Column(db.Boolean)
     employment_status = db.Column(db.String(30))
-    category = db.Column(db.String(30))  # e.g. GENERAL / OBC / SC / ST
+    category = db.Column(db.String(30))  # e.g. GENERAL / OBC / SC / ST / EWS
     farmer_status = db.Column(db.Boolean)
 
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -121,13 +120,23 @@ class CitizenProfile(db.Model):
         "farmer_status",
     ]
 
+    def current_age(self, today=None):
+        """Age today: computed from date_of_birth when known, otherwise the stored value."""
+        if self.date_of_birth:
+            today = today or date.today()
+            dob = self.date_of_birth
+            return today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+        return self.age
+
     def to_memory_dict(self) -> dict:
         """
         Flatten the profile into the dict the rule engine and agent consume
         as the citizen's stored "memory". This is the single source of
         truth other modules should use instead of touching columns directly.
         """
-        return {field: getattr(self, field) for field in self.RULE_FIELDS}
+        data = {field: getattr(self, field) for field in self.RULE_FIELDS}
+        data["age"] = self.current_age()
+        return data
 
     def missing_fields(self, required_fields=None) -> list:
         """
@@ -187,6 +196,9 @@ class Scheme(db.Model):
     is_demo = db.Column(db.Boolean, default=False, nullable=False)
     last_verified = db.Column(db.DateTime)
     rule_version = db.Column(db.Integer, default=1)  # convenience pointer to current rule version
+    # Criteria the 14 profile fields cannot express (BPL card, land holding, ...). Shown to the citizen as
+    # "check these yourself" so they are never silently skipped.
+    manual_checks = db.Column(db.JSON, default=list)
 
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -234,6 +246,7 @@ class Scheme(db.Model):
             "exclusions": self.exclusions,
             "is_demo": self.is_demo,
             "last_verified": self.last_verified.isoformat() if self.last_verified else None,
+            "manual_checks": self.manual_checks or [],
         }
         if include_rule:
             rule = self.latest_rule()
@@ -274,7 +287,7 @@ class SchemeSource(db.Model):
     source_title = db.Column(db.String(255), nullable=False)
     publisher = db.Column(db.String(255), nullable=False)
     excerpt = db.Column(db.Text, nullable=False)
-    jurisdiction = db.Column(db.String(100), nullable=False)
+    jurisdiction = db.Column(db.String(100), nullable=False)  # a state/UT name for STATE schemes, else "India"
     proposed_rule_json = db.Column(db.JSON)
     rule_version = db.Column(db.Integer, nullable=False, default=0)
     status = db.Column(db.String(20), nullable=False, default="PENDING")
@@ -405,6 +418,9 @@ class Conversation(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     title = db.Column(db.String(160))
+    # Scheme ids the last answer was about, so a follow-up like "what documents do I need?" knows the topic
+    # without forwarding earlier user messages to the hosted model.
+    focus_scheme_ids = db.Column(db.JSON)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     messages = db.relationship("Message", backref="conversation", cascade="all, delete-orphan", order_by="Message.created_at")
@@ -420,13 +436,20 @@ class Message(db.Model):
 
 
 class UserMemory(db.Model):
-    """Explicit user-provided durable fact; inferred values are not stored here."""
+    """
+    Metadata about one remembered fact. The VALUE lives on CitizenProfile (single source of truth);
+    agent/memory.py keeps this row in sync and records where it came from and whether the user confirmed it.
+    """
     __tablename__ = "user_memory"
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     key = db.Column(db.String(80), nullable=False)
     value = db.Column(db.JSON, nullable=False)
     source_message_id = db.Column(db.Integer, db.ForeignKey("messages.id"))
+    source = db.Column(db.String(20), default="chat")  # chat | profile
+    confirmed = db.Column(db.Boolean, nullable=False, default=False)
+    last_confirmed_at = db.Column(db.DateTime)
+    previous_value = db.Column(db.JSON)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     __table_args__ = (db.UniqueConstraint("user_id", "key"),)

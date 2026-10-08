@@ -100,6 +100,18 @@
     .badge.ELIGIBLE { background: var(--ok-bg); color: var(--ok); }
     .badge.NOT_ELIGIBLE { background: var(--no-bg); color: var(--no); }
     .badge.NEEDS_INFORMATION { background: var(--need-bg); color: var(--need); }
+    .badge.CANNOT_CHECK { background: #e5e7eb; color: #374151; }
+    .checks { margin: .35rem 0 0; padding-left: 1.1rem; font-size: .84rem; color: var(--muted); }
+    .disclaimer { font-size: .78rem; color: var(--muted); }
+    .remembered { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; font-size: .8rem; color: var(--muted); }
+    .rchip { display: inline-flex; align-items: center; gap: .3rem; border: 1px solid var(--line); border-radius: 999px; padding: .1rem .25rem .1rem .6rem; background: #fff; color: var(--ink); }
+    .rchip button { border: 0; background: none; padding: 0 .3rem; color: var(--muted); }
+    .rchip button:hover { color: var(--accent); }
+    .tag { font-size: .72rem; border-radius: 999px; padding: .05rem .45rem; background: var(--need-bg); color: var(--need); margin-left: .3rem; }
+    .tag.ok { background: var(--ok-bg); color: var(--ok); }
+    .check { display: flex; gap: .5rem; align-items: flex-start; font-size: .84rem; color: var(--muted); margin: 0 0 .85rem; }
+    .check input { margin-top: .25rem; }
+    .unread { background: var(--accent); color: #fff; border-radius: 999px; font-size: .72rem; padding: 0 .45rem; margin-left: .35rem; }
     .elig-note { margin: .3rem 0 0; font-size: .84rem; color: var(--muted); }
     .elig-note button { border: 0; background: none; color: var(--accent); padding: 0; text-decoration: underline; }
 
@@ -157,6 +169,7 @@
         <label class="field">Username <input name="username" autocomplete="username" required></label>
         <label class="field">Email (only needed to register) <input name="email" type="email" autocomplete="email"></label>
         <label class="field">Password (12+ characters) <input name="password" type="password" autocomplete="current-password" minlength="12" required></label>
+        <label class="check"><input type="checkbox" name="consent"> <span>Registering: I agree that the details I share (such as age, state and income) are stored to check scheme eligibility. I can download or delete them at any time.</span></label>
         <div class="row">
           <button class="btn primary" type="submit" data-action="login">Log in</button>
           <button class="btn" type="submit" data-action="register">Register</button>
@@ -176,6 +189,7 @@
       <div class="side-foot">
         <button class="side-btn" id="open-profile" type="button">My profile</button>
         <button class="side-btn" id="open-memory" type="button">What the agent remembers</button>
+        <button class="side-btn" id="open-notes" type="button">Notifications <span id="unread" class="unread hidden">0</span></button>
         <button class="side-btn" id="logout" type="button">Log out</button>
       </div>
     </aside>
@@ -208,7 +222,8 @@
       <div class="dlg-body">
         <p class="note">Saved once and used by the eligibility checks. Fields you leave empty stay “not provided”.</p>
         <div class="grid2">
-          <label class="field">Age <input name="age" type="number" min="0" max="130"></label>
+          <label class="field">Date of birth (keeps your age current) <input name="date_of_birth" type="date"></label>
+          <label class="field">Age (if you prefer not to give a date of birth) <input name="age" type="number" min="0" max="130"></label>
           <label class="field">Gender <input name="gender" maxlength="20"></label>
           <label class="field">State or union territory <input name="state" maxlength="80"></label>
           <label class="field">District <input name="district" maxlength="80"></label>
@@ -239,9 +254,16 @@
       <div id="memory-facts"></div>
     </div>
     <div class="dlg-foot">
+      <button class="btn" id="export-data" type="button">Download my data</button>
       <button class="btn danger" id="clear-conversations" type="button">Clear chat history</button>
       <button class="btn danger" id="clear-memory" type="button">Forget all facts</button>
+      <button class="btn danger" id="delete-account" type="button">Delete my account</button>
     </div>
+  </dialog>
+
+  <dialog id="notes-dialog">
+    <div class="dlg-head"><h3>Notifications</h3><button class="close" type="button" data-close aria-label="Close">×</button></div>
+    <div class="dlg-body" id="notes-list"></div>
   </dialog>
 
   <script>
@@ -251,12 +273,12 @@
     let busy = false;
 
     const FIELD_LABELS = {
-      age: "age", gender: "gender", state: "state", district: "district", annual_income: "annual income",
+      age: "age", date_of_birth: "date of birth", gender: "gender", state: "state", district: "district", annual_income: "annual income",
       occupation: "occupation", education_level: "education", family_size: "family size",
       marital_status: "marital status", disability_status: "disability status", student_status: "student status",
       employment_status: "employment status", category: "social category", farmer_status: "farmer status"
     };
-    const STATUS_LABELS = { ELIGIBLE: "Eligible", NOT_ELIGIBLE: "Not eligible", NEEDS_INFORMATION: "Needs more info" };
+    const STATUS_LABELS = { ELIGIBLE: "Likely eligible", NOT_ELIGIBLE: "Not eligible", NEEDS_INFORMATION: "Needs more info", CANNOT_CHECK: "Can't check automatically" };
     const SUGGESTIONS = [
       "Which schemes can I apply for?",
       "I am a 21-year-old engineering student from Maharashtra, family income is around ₹2 lakh",
@@ -287,6 +309,7 @@
       if (!response.ok) {
         const error = new Error(result.error || `Request failed (${response.status})`);
         error.status = response.status;
+        error.result = result;
         throw error;
       }
       return result;
@@ -332,15 +355,33 @@
           }
           box.append(sources);
         }
-        if (extras.saved && extras.saved.length) {
-          box.append(el("div", "saved", "Remembered: " + extras.saved.join(", ")));
-        }
+        if (extras.remembered && extras.remembered.length) box.append(renderRemembered(extras.remembered));
+        if (extras.eligibility && extras.eligibility.length && extras.disclaimer) box.append(el("div", "disclaimer", extras.disclaimer));
         if (box.children.length) bubble.append(box);
       }
       wrap.append(bubble);
       lane.append(wrap);
       scrollDown();
       return wrap;
+    }
+
+    function renderRemembered(items) {
+      const box = el("div", "remembered");
+      box.append(document.createTextNode("Remembered:"));
+      for (const item of items) {
+        const chip = el("span", "rchip");
+        const was = item.previous !== null && item.previous !== undefined ? ` (was ${item.previous})` : "";
+        chip.append(document.createTextNode(`${FIELD_LABELS[item.key] || item.key}: ${item.value}${was}`));
+        const ok = el("button", "", "✓");
+        ok.type = "button"; ok.title = "That's right";
+        ok.addEventListener("click", async () => { await requestJson(`/api/memory/${encodeURIComponent(item.key)}/confirm`, { method: "POST" }).catch(() => {}); ok.disabled = true; });
+        const no = el("button", "", "✕");
+        no.type = "button"; no.title = "Forget this";
+        no.addEventListener("click", async () => { await requestJson(`/api/memory/${encodeURIComponent(item.key)}`, { method: "DELETE" }).catch(() => {}); chip.remove(); });
+        chip.append(ok, no);
+        box.append(chip);
+      }
+      return box;
     }
 
     function renderEligibility(rows) {
@@ -363,6 +404,14 @@
           card.append(el("p", "elig-note", `Why: ${FIELD_LABELS[first.field] || first.field} is ${JSON.stringify(first.actual)}, needs ${first.operator} ${JSON.stringify(first.expected)}`));
         } else if (row.status === "ELIGIBLE" && row.reasons && row.reasons.length) {
           card.append(el("p", "elig-note", "Because: " + row.reasons.join("; ")));
+        } else if (row.status === "CANNOT_CHECK") {
+          card.append(el("p", "elig-note", row.eligibility_text ? "Official criteria: " + row.eligibility_text : "No machine-readable rule is on file for this scheme."));
+        }
+        if (row.manual_checks && row.manual_checks.length) {
+          const list = el("ul", "checks");
+          list.append(el("li", "", "Also check yourself:"));
+          for (const item of row.manual_checks) list.append(el("li", "", item));
+          card.append(list);
         }
         list.append(card);
       }
@@ -392,29 +441,31 @@
       autoGrow();
       const typing = showTyping();
       try {
-        const before = new Set((await safeMemoryKeys()));
         const result = await requestJson("/api/chat", {
           method: "POST",
           body: JSON.stringify({ message: text, conversation_id: conversationId })
         });
         typing.remove();
         conversationId = result.conversation_id;
-        const saved = (result.memory || []).map((f) => f.key).filter((k) => !before.has(k)).map((k) => FIELD_LABELS[k] || k);
-        addMessage("bot", result.answer, { demo: result.demo, eligibility: result.eligibility, citations: result.citations, saved });
+        addMessage("bot", result.answer, { demo: result.demo, eligibility: result.eligibility, citations: result.citations,
+          remembered: result.remembered, disclaimer: result.disclaimer });
         loadHistory();
       } catch (error) {
         typing.remove();
         if (error.status === 401) { showAuth(); return; }
         addMessage("bot", error.message, { isError: true });
+        if (error.result && error.result.remembered && error.result.remembered.length) {
+          const note = addMessage("bot", "I still saved what you told me:");
+          const bubble = note.querySelector(".bubble");
+          const box = el("div", "extras");
+          box.append(renderRemembered(error.result.remembered));
+          bubble.append(box);
+        }
       } finally {
         busy = false;
         sendBtn.disabled = false;
         input.focus();
       }
-    }
-
-    async function safeMemoryKeys() {
-      try { return (await requestJson("/api/memory")).facts.map((f) => f.key); } catch (_) { return []; }
     }
 
     function autoGrow() {
@@ -474,6 +525,7 @@
       $("#auth").classList.add("hidden");
       $("#app").classList.remove("hidden");
       newChat();
+      refreshNotifications();
     }
 
     $("#auth-form").addEventListener("submit", async (event) => {
@@ -481,6 +533,7 @@
       const values = Object.fromEntries(new FormData(event.currentTarget));
       const action = event.submitter.dataset.action;
       if (action !== "register") delete values.email;
+      values.consent = action === "register" && event.currentTarget.elements.consent.checked;
       try {
         await requestJson(action === "register" ? "/api/register" : "/api/login", { method: "POST", body: JSON.stringify(values) });
         showNotice("");
@@ -500,6 +553,7 @@
     const BOOL_FIELDS = ["student_status", "farmer_status", "disability_status"];
 
     function fillProfile(profile) {
+      profileForm.elements.date_of_birth.value = profile.date_of_birth ?? "";
       for (const key of ["age", "annual_income", "family_size", ...TEXT_FIELDS]) profileForm.elements[key].value = profile[key] ?? "";
       for (const key of BOOL_FIELDS) profileForm.elements[key].value = profile[key] === null || profile[key] === undefined ? "" : String(profile[key]);
     }
@@ -513,6 +567,8 @@
       for (const key of ["age", "annual_income", "family_size"]) values[key] = raw[key] === "" ? null : Number(raw[key]);
       for (const key of BOOL_FIELDS) values[key] = raw[key] === "" ? null : raw[key] === "true";
       for (const key of TEXT_FIELDS) values[key] = raw[key] === "" ? null : raw[key];
+      values.date_of_birth = raw.date_of_birth === "" ? null : raw.date_of_birth;
+      if (values.date_of_birth) values.age = null;  // age is derived from the date of birth
       try {
         await requestJson("/api/profile", { method: "PUT", body: JSON.stringify(values) });
         $("#profile-dialog").close();
@@ -531,6 +587,15 @@
           const row = el("div", "fact");
           const label = el("span");
           label.append(el("b", "", (FIELD_LABELS[fact.key] || fact.key) + ": "), document.createTextNode(String(fact.value)));
+          if (fact.stale) label.append(el("span", "tag", "may be out of date"));
+          else if (fact.confirmed) label.append(el("span", "tag ok", "confirmed"));
+          const actions = el("span");
+          if (!fact.confirmed || fact.stale) {
+            const confirm = el("button", "", "Still correct");
+            confirm.type = "button";
+            confirm.addEventListener("click", async () => { await requestJson(`/api/memory/${encodeURIComponent(fact.key)}/confirm`, { method: "POST" }); openMemory(); });
+            actions.append(confirm, document.createTextNode(" "));
+          }
           const forget = el("button", "", "Forget");
           forget.type = "button";
           forget.addEventListener("click", async () => {
@@ -539,7 +604,8 @@
             fillProfile(profile);
             openMemory();
           });
-          row.append(label, forget);
+          actions.append(forget);
+          row.append(label, actions);
           box.append(row);
         }
       } catch (error) { box.append(el("p", "note", error.message)); }
@@ -558,6 +624,53 @@
       await requestJson("/api/conversations", { method: "DELETE" });
       $("#memory-dialog").close();
       newChat();
+    });
+
+    /* ---------- Data rights + notifications ---------- */
+    $("#export-data").addEventListener("click", async () => {
+      const data = await requestJson("/api/account/export");
+      const link = el("a");
+      link.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+      link.download = "my-scheme-agent-data.json";
+      link.click();
+      URL.revokeObjectURL(link.href);
+    });
+    $("#delete-account").addEventListener("click", async () => {
+      const password = prompt("This permanently deletes your account, profile, memory and chats. Enter your password to confirm:");
+      if (!password) return;
+      try {
+        await requestJson("/api/account", { method: "DELETE", body: JSON.stringify({ password }) });
+        $("#memory-dialog").close();
+        showAuth();
+        showNotice("Your account and data were deleted.");
+      } catch (error) { alert(error.message); }
+    });
+
+    async function refreshNotifications() {
+      try {
+        const { notifications, unread } = await requestJson("/api/notifications");
+        const badge = $("#unread");
+        badge.textContent = unread;
+        badge.classList.toggle("hidden", !unread);
+        return notifications;
+      } catch (_) { return []; }
+    }
+    $("#open-notes").addEventListener("click", async () => {
+      $("#sidebar").classList.remove("open");
+      const list = $("#notes-list");
+      list.replaceChildren();
+      const notes = await refreshNotifications();
+      if (!notes.length) list.append(el("p", "note", "No notifications yet. You'll be told here when a scheme update means you may now qualify."));
+      for (const note of notes) {
+        const row = el("div", "fact");
+        const text = el("span");
+        text.append(el("b", "", note.title || "Update"), document.createElement("br"), document.createTextNode(note.message || ""));
+        row.append(text);
+        list.append(row);
+      }
+      $("#notes-dialog").showModal();
+      await requestJson("/api/notifications/read", { method: "POST" }).catch(() => {});
+      refreshNotifications();
     });
 
     /* ---------- Wiring ---------- */

@@ -5,8 +5,19 @@ import hashlib
 import math
 import re
 
+from sqlalchemy.orm import joinedload
+
 from database.db import db
 from database.models import DocumentChunk, GovernmentDocument, Scheme, SchemeSource
+
+# A chunk must clear these to be returned, so an unrelated question retrieves nothing instead of "the least bad".
+MIN_LEXICAL_SCORE = 0.2    # share of the question's meaningful words found in the chunk
+MIN_SEMANTIC_SCORE = 0.25  # cosine similarity (text-embedding-3-small: unrelated text is usually < 0.2)
+_STOPWORDS = {
+    "about", "and", "are", "can", "for", "from", "how", "the", "what", "which", "with", "who", "when", "where",
+    "does", "this", "that", "there", "have", "has", "you", "your", "any", "all", "get", "will", "would", "should",
+    "need", "want", "tell", "give", "please", "scheme", "schemes",
+}
 
 
 def searchable_scheme_text(scheme: Scheme) -> str:
@@ -144,9 +155,16 @@ def _cosine(left, right):
     return dot / denom if denom else 0.0
 
 
+def _terms(text: str) -> set[str]:
+    return {w.lower() for w in re.findall(r"[\w]+", text) if len(w) > 2 and w.lower() not in _STOPWORDS}
+
+
 def retrieve(query: str, *, top_k=5, embedding=None, include_demo=False,
-             verified_only=True, category=None, scheme_id=None, source_type=None):
-    q = DocumentChunk.query.join(GovernmentDocument).join(Scheme).filter(Scheme.active.is_(True))
+             verified_only=True, category=None, scheme_id=None, source_type=None,
+             min_lexical=MIN_LEXICAL_SCORE, min_semantic=MIN_SEMANTIC_SCORE):
+    q = (DocumentChunk.query.join(GovernmentDocument).join(Scheme)
+         .filter(Scheme.active.is_(True), GovernmentDocument.is_current.is_(True))
+         .options(joinedload(DocumentChunk.document).joinedload(GovernmentDocument.scheme)))
     if include_demo and not verified_only:
         q = q.filter(db.or_(GovernmentDocument.verification_status == "VERIFIED",
                             GovernmentDocument.verification_status == "DEMO"))
@@ -162,19 +180,15 @@ def retrieve(query: str, *, top_k=5, embedding=None, include_demo=False,
         q = q.filter(Scheme.id == scheme_id)
     if source_type:
         q = q.filter(GovernmentDocument.source_type == source_type)
-    chunks = q.all()
-    terms = {w.lower() for w in re.findall(r"[\w]+", query) if len(w) > 2}
+    terms = _terms(query)
     ranked = []
-    for chunk in chunks:
+    for chunk in q.all():
         doc, scheme = chunk.document, chunk.document.scheme
-        if not doc.is_current:
-            continue
         if embedding is not None and chunk.embedding:
-            score = _cosine(embedding, chunk.embedding)
+            score, minimum = _cosine(embedding, chunk.embedding), min_semantic
         else:
-            words = {w.lower() for w in re.findall(r"[\w]+", chunk.text) if len(w) > 2}
-            score = len(terms & words) / max(len(terms), 1)
-        if score > 0:
+            score, minimum = len(terms & _terms(chunk.text)) / max(len(terms), 1), min_lexical
+        if score > 0 and score >= minimum:
             ranked.append((score, chunk, scheme, doc))
     ranked.sort(key=lambda row: (row[0], row[1].id), reverse=True)
     return [{
