@@ -560,9 +560,9 @@ def ingestion_errors():
 @admin_required
 def rebuild_index():
     from agent.rag import _embeddings, index_scheme
-    from openai import OpenAI
+    from agent.llm import make_client  # OpenAI or an OpenAI-compatible provider, chosen via OPENAI_BASE_URL
     api_key = current_app.config.get("OPENAI_API_KEY")
-    client = OpenAI(api_key=api_key) if api_key else None
+    client = make_client(api_key) if api_key else None
     schemes = Scheme.query.order_by(Scheme.id).all()
     for scheme in schemes:
         index_scheme(scheme, client=client, embedding_model=current_app.config.get("EMBEDDING_MODEL", "text-embedding-3-small"))

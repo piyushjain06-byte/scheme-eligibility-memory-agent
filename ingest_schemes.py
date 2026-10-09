@@ -13,8 +13,8 @@ def main():
     app = create_app()
     client = None
     if not args.no_embeddings and Config.OPENAI_API_KEY:
-        from openai import OpenAI
-        client = OpenAI(api_key=Config.OPENAI_API_KEY)
+        from agent.llm import make_client
+        client = make_client(Config.OPENAI_API_KEY)
     elif not args.no_embeddings:
         parser.error("Set OPENAI_API_KEY for semantic embeddings, or pass --no-embeddings")
     with app.app_context():

@@ -16,8 +16,8 @@ STALE_AFTER_DAYS = {"age": 180, "annual_income": 365, "employment_status": 365, 
 
 def extract_facts_with_llm(api_key, model, text):
     """Optional second extractor. Its output passes through the same validation as the regex path."""
-    from openai import OpenAI
-    response = OpenAI(api_key=api_key).chat.completions.create(
+    from agent.llm import make_client  # OpenAI or an OpenAI-compatible provider, chosen via OPENAI_BASE_URL
+    response = make_client(api_key).chat.completions.create(
         model=model, temperature=0,
         messages=[{"role": "system", "content": LLM_SYSTEM_PROMPT}, {"role": "user", "content": text}],
     )

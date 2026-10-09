@@ -229,9 +229,10 @@ def answer_chat(user_id, message, api_key, model, history=None, embedding_model=
             if best_score else []
         )
 
-    from openai import OpenAI
+    # make_client() picks OpenAI or any OpenAI-compatible provider (e.g. Gemini) from OPENAI_BASE_URL in .env.
+    from agent.llm import make_client
 
-    client = OpenAI(api_key=api_key)
+    client = make_client(api_key)
     from agent.rag import retrieve
     query_vector = None
     if hasattr(client, "embeddings"):

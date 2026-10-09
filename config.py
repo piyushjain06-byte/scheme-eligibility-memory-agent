@@ -3,7 +3,9 @@ import secrets
 from dotenv import load_dotenv
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-load_dotenv(os.path.join(BASE_DIR, ".env"))
+# override=True: values in .env win over any stale/placeholder variable already set on the computer
+# (e.g. a leftover OPENAI_API_KEY=your_api_key_here), which otherwise silently replaces your real key.
+load_dotenv(os.path.join(BASE_DIR, ".env"), override=True)
 
 
 def _flag(name, default):
