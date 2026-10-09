@@ -93,6 +93,8 @@ def normalize_record(raw, row_number=1):
             row["last_updated"] = date.fromisoformat(str(row["last_updated"])[:10])
         except ValueError as exc:
             raise DatasetValidationError(f"Row {row_number}: last_updated must be YYYY-MM-DD") from exc
+    else:
+        row["last_updated"] = None  # empty CSV cell: SQLite Date columns reject ""
     row["source_verified"] = _bool(row.get("source_verified"), "source_verified")
     if row.get("active") not in (None, ""):
         row["active"] = _bool(row["active"], "active")

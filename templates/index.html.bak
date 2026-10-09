@@ -119,8 +119,6 @@
     .source { font-size: .8rem; text-decoration: none; color: var(--accent); border: 1px solid var(--line); border-radius: 8px; padding: .2rem .55rem; background: #fff; }
     .source:hover { border-color: var(--accent); }
     .saved { font-size: .8rem; color: var(--muted); }
-    .src-details summary { cursor: pointer; font-size: .8rem; color: var(--muted); }
-    .src-details .sources { margin-top: .4rem; }
 
     .typing .bubble { display: flex; gap: 4px; padding: .85rem 1rem; }
     .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); opacity: .35; animation: blink 1.1s infinite; }
@@ -344,9 +342,8 @@
       bubble.append(document.createTextNode(text));
       if (extras && !extras.isError) {
         const box = el("div", "extras");
-        const shown = (extras.eligibility || []).filter((r) => r.status === "ELIGIBLE" || r.status === "NEEDS_INFORMATION").slice(0, 5);
         if (extras.demo) box.append(el("div", "demo-flag", "DEMO / TEST DATA ONLY — not verified government information."));
-        if (shown.length) box.append(renderEligibility(shown));
+        if (extras.eligibility && extras.eligibility.length) box.append(renderEligibility(extras.eligibility));
         if (extras.citations && extras.citations.length) {
           const sources = el("div", "sources");
           for (const citation of extras.citations) {
@@ -356,12 +353,10 @@
             link.rel = "noopener noreferrer";
             sources.append(link);
           }
-          const details = el("details", "src-details");
-          details.append(el("summary", "", `Sources (${extras.citations.length})`), sources);
-          box.append(details);
+          box.append(sources);
         }
         if (extras.remembered && extras.remembered.length) box.append(renderRemembered(extras.remembered));
-        if (shown.length && extras.disclaimer) box.append(el("div", "disclaimer", extras.disclaimer));
+        if (extras.eligibility && extras.eligibility.length && extras.disclaimer) box.append(el("div", "disclaimer", extras.disclaimer));
         if (box.children.length) bubble.append(box);
       }
       wrap.append(bubble);
