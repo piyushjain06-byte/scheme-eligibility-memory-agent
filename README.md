@@ -403,6 +403,28 @@ do not include citizen details or policy facts that can change. After training,
 set `OPENAI_CHAT_MODEL` to the returned fine-tuned model ID. Training is not
 run automatically, and no API key or training corpus is included in this repo.
 
+### Proactive task reminders
+
+Direct statements such as “I still need my income certificate” can create a
+user-owned task; scholarship application intent can also create an active goal.
+Tasks are visible through `GET /api/tasks` and can be updated, completed,
+cancelled, or snoozed with `PATCH /api/tasks/<id>`. Goals use `GET /api/goals`
+and `PATCH /api/goals/<id>`. Notification preferences are available at
+`GET/PUT /api/notification-preferences` (`enabled`, `quiet_start`, `quiet_end`).
+
+After deploying a release with these tables, run the additive schema upgrader:
+
+```bash
+python upgrade_db.py
+```
+
+Run the in-app reminder processor periodically, independently of chat. Invoke
+`python -m flask --app app:app process-due-notifications` daily from Windows
+Task Scheduler or Unix cron. Tasks without an explicit due date first become
+reminder-eligible one day after creation. Repeated runs are idempotent within
+the 24-hour reminder cooldown. Quiet-hour times use the user's local clock
+basis; delivery is currently in-app only and does not send email or SMS.
+
 ## Demo Credentials
 
 > ⚠️ **Development/demo credentials only — do not reuse in any real deployment.**

@@ -3,7 +3,8 @@
 from flask import Blueprint, jsonify, session
 
 from database.db import db
-from database.models import EligibilityEvaluation, UserMemory
+from database.models import EligibilityEvaluation, EpisodicMemory, NotificationPreference, TaskEvent, UserGoal, UserMemory, UserTask
+from database.db import db
 from agent import memory
 from agent.user_memory import list_memory
 from routes.api import _authenticated_user, _json_body, login_required
@@ -27,6 +28,15 @@ def export_account():
                                      for m in c.messages]} for c in user.conversations],
         eligibility_history=[e.to_dict() for e in evaluations],
         notifications=[n.to_dict() for n in user.notifications],
+        episodic_memories=[{"id": e.id, "event_type": e.event_type, "summary": e.summary,
+                            "verification": e.verification, "created_at": e.created_at.isoformat(),
+                            "scheme_id": e.scheme_id} for e in EpisodicMemory.query.filter_by(user_id=user.id).all()],
+        goals=[{"id": g.id, "title": g.title, "description": g.description, "status": g.status,
+                "scheme_id": g.scheme_id} for g in UserGoal.query.filter_by(user_id=user.id).all()],
+        tasks=[{"id": t.id, "title": t.title, "description": t.description, "status": t.status,
+                "due_at": t.due_at.isoformat() if t.due_at else None} for t in UserTask.query.filter_by(user_id=user.id).all()],
+        notification_preferences=(lambda p: {"enabled": p.enabled, "quiet_start": p.quiet_start,
+            "quiet_end": p.quiet_end, "timezone_offset_minutes": p.timezone_offset_minutes} if p else None)(db.session.get(NotificationPreference, user.id)),
     )
     response.headers["Content-Disposition"] = "attachment; filename=my-scheme-agent-data.json"
     return response
@@ -45,6 +55,7 @@ def delete_account():
         return jsonify(error="Password confirmation failed"), 403
     # Facts reference messages, so remove them before the cascade deletes the conversations.
     UserMemory.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    TaskEvent.query.filter(TaskEvent.task_id.in_(db.session.query(UserTask.id).filter_by(user_id=user.id))).delete(synchronize_session=False)
     db.session.expire(user)
     db.session.delete(user)
     db.session.commit()

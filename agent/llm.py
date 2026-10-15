@@ -13,7 +13,12 @@ import os
 
 def make_client(api_key):
     from openai import OpenAI  # imported here so tests that fake the 'openai' module keep working
-    base_url = os.environ.get("OPENAI_BASE_URL", "").strip()
+    try:
+        from flask import current_app, has_app_context
+        base_url = current_app.config.get("OPENAI_BASE_URL", "") if has_app_context() else os.environ.get("OPENAI_BASE_URL", "")
+    except RuntimeError:
+        base_url = os.environ.get("OPENAI_BASE_URL", "")
+    base_url = (base_url or "").strip()
     if base_url:
         return OpenAI(api_key=api_key, base_url=base_url)
     return OpenAI(api_key=api_key)

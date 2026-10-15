@@ -266,6 +266,14 @@
   <dialog id="notes-dialog">
     <div class="dlg-head"><h3>Notifications</h3><button class="close" type="button" data-close aria-label="Close">×</button></div>
     <div class="dlg-body" id="notes-list"></div>
+    <div class="dlg-body">
+      <h4>My open tasks</h4>
+      <div id="task-list"></div>
+      <label class="field"><input id="task-notifications-enabled" type="checkbox" checked> Enable task reminders</label>
+      <div class="grid2"><label class="field">Quiet hours start <input id="quiet-start" type="time"></label>
+      <label class="field">Quiet hours end <input id="quiet-end" type="time"></label></div>
+      <button class="btn" id="save-notification-preferences" type="button">Save reminder settings</button>
+    </div>
   </dialog>
 
   <script>
@@ -673,9 +681,49 @@
         row.append(text);
         list.append(row);
       }
+      await renderTasks();
+      await renderNotificationPreferences();
       $("#notes-dialog").showModal();
       await requestJson("/api/notifications/read", { method: "POST" }).catch(() => {});
       refreshNotifications();
+    });
+
+    async function renderTasks() {
+      const box = $("#task-list");
+      box.replaceChildren();
+      try {
+        const { tasks } = await requestJson("/api/tasks");
+        const open = tasks.filter((task) => !["COMPLETED", "CANCELLED"].includes(task.status));
+        if (!open.length) box.append(el("p", "note", "No unfinished tasks."));
+        for (const task of open) {
+          const row = el("div", "fact"), title = el("span", "", `${task.title} · ${task.status}`), actions = el("span");
+          const action = (label, method, body) => {
+            const button = el("button", "", label); button.type = "button";
+            button.addEventListener("click", async () => { await requestJson(`/api/tasks/${task.id}`, { method, body: body ? JSON.stringify(body) : undefined }); renderTasks(); });
+            return button;
+          };
+          const edit = el("button", "", "Correct"); edit.type = "button";
+          edit.addEventListener("click", async () => { const title = prompt("Correct task title", task.title); if (title && title.trim()) { await requestJson(`/api/tasks/${task.id}`, { method: "PATCH", body: JSON.stringify({ title: title.trim() }) }); renderTasks(); } });
+          actions.append(action("Complete", "PATCH", { status: "COMPLETED" }), document.createTextNode(" "), action("Snooze 1 day", "PATCH", { snooze_hours: 24 }), document.createTextNode(" "), edit, document.createTextNode(" "), action("Delete", "DELETE"));
+          row.append(title, actions); box.append(row);
+        }
+      } catch (error) { box.append(el("p", "note", error.message)); }
+    }
+
+    async function renderNotificationPreferences() {
+      const pref = await requestJson("/api/notification-preferences").catch(() => null);
+      if (!pref) return;
+      $("#task-notifications-enabled").checked = pref.enabled;
+      $("#quiet-start").value = pref.quiet_start || "";
+      $("#quiet-end").value = pref.quiet_end || "";
+    }
+    $("#save-notification-preferences").addEventListener("click", async () => {
+      await requestJson("/api/notification-preferences", { method: "PUT", body: JSON.stringify({
+        enabled: $("#task-notifications-enabled").checked,
+        quiet_start: $("#quiet-start").value || null, quiet_end: $("#quiet-end").value || null,
+        timezone_offset_minutes: -new Date().getTimezoneOffset(),
+      }) });
+      showNotice("Reminder settings saved.");
     });
 
     /* ---------- Wiring ---------- */

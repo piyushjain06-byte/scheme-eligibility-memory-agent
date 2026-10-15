@@ -3,7 +3,7 @@
 from sqlalchemy import inspect, text
 from app import create_app
 from database.db import db
-from database.models import Conversation, GovernmentDocument, Scheme, User, UserMemory
+from database.models import Conversation, GovernmentDocument, Notification, NotificationPreference, Scheme, User, UserMemory
 
 
 def upgrade_existing_schema():
@@ -11,7 +11,7 @@ def upgrade_existing_schema():
     quote = db.engine.dialect.identifier_preparer.quote
     with db.engine.begin() as connection:
         inspector = inspect(db.engine)
-        for model in (Scheme, GovernmentDocument, User, Conversation, UserMemory):
+        for model in (Scheme, GovernmentDocument, User, Conversation, UserMemory, Notification, NotificationPreference):
             existing = {column["name"] for column in inspector.get_columns(model.__tablename__)}
             for column in model.__table__.columns:
                 if column.name in existing or column.primary_key or column.name == "id":
@@ -23,6 +23,9 @@ def upgrade_existing_schema():
                     f"ALTER TABLE {quote(model.__tablename__)} ADD COLUMN {quote(column.name)} {sql_type}{nullable}{default}"
                 ))
                 existing.add(column.name)
+        inspector = inspect(db.engine)
+        if not any(index.get("column_names") == ["dedupe_key"] and index.get("unique") for index in inspector.get_indexes("notifications")):
+            connection.execute(text(f"CREATE UNIQUE INDEX {quote('uq_notifications_dedupe_key')} ON {quote('notifications')} ({quote('dedupe_key')})"))
 
 
 def main():

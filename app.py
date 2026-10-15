@@ -28,6 +28,12 @@ def create_app(config_class=Config):
     app.register_blueprint(api_bp, url_prefix="/api")
     app.register_blueprint(account_bp, url_prefix="/api")
 
+    @app.cli.command("process-due-notifications")
+    def process_due_notifications():
+        """Create due in-app task reminders; invoke periodically from cron or Task Scheduler."""
+        from agent.notification_service import process_due_tasks
+        print(f"Created {process_due_tasks()} task reminder(s).")
+
     @app.route("/")
     def index():
         return render_template("index.html")

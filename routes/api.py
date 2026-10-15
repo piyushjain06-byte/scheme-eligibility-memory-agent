@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 from flask import Blueprint, current_app, jsonify, request, session
 
 from database.db import db
-from database.models import CitizenProfile, Conversation, EligibilityRule, GovernmentDocument, IngestionRun, Message, Notification, Scheme, SchemeSource, User, UserMemory
+from database.models import CitizenProfile, Conversation, EligibilityRule, EpisodicMemory, GovernmentDocument, IngestionRun, Message, Notification, NotificationPreference, Scheme, SchemeSource, TaskEvent, User, UserGoal, UserMemory, UserTask
 from agent import memory
 from agent.chat import (
     ChatConfigurationError,
@@ -20,6 +20,8 @@ from agent.normalize import canonical_state
 from agent.ratelimit import rate_limit
 from agent.rule_engine import InvalidRuleError, evaluate_rule
 from agent.user_memory import confirm_memory, delete_memory, list_memory, save_explicit_facts
+from agent.task_detection import process_message as process_task_message
+from agent.memory_retrieval import retrieve_personal_context
 
 api_bp = Blueprint("api", __name__)
 
@@ -223,8 +225,17 @@ def chat():
         llm = {"api_key": current_app.config["OPENAI_API_KEY"],
                "model": current_app.config.get("OPENAI_EXTRACTION_MODEL", "gpt-4o-mini")}
     remembered = save_explicit_facts(user_id, body["message"], user_message.id, llm=llm)
+    process_task_message(user_id, body["message"], conversation.id, user_message.id)
+    personal_context = retrieve_personal_context(user_id, body["message"])
+    recall_request = any(term in body["message"].lower() for term in
+                         ("last week", "previous", "previously", "what did we", "which scheme did", "what documents did i still need", "continue helping", "continue my"))
     try:
-        result = answer_chat(
+        result = ({"answer": "Here is what I found in your saved history: " + " ".join(personal_context),
+                   "citations": [], "eligibility": [], "focus_scheme_ids": conversation.focus_scheme_ids or []}
+                  if recall_request and personal_context else
+                  {"answer": "I don't have a saved relevant conversation or unfinished task to recall yet. Tell me which application or scheme you mean, and I can help continue.",
+                   "citations": [], "eligibility": [], "focus_scheme_ids": conversation.focus_scheme_ids or []}
+                  if recall_request else answer_chat(
             user_id=user_id,
             message=body["message"],
             api_key=current_app.config.get("OPENAI_API_KEY"),
@@ -232,7 +243,8 @@ def chat():
             history=history,
             embedding_model=current_app.config.get("EMBEDDING_MODEL", "text-embedding-3-small"),
             focus_scheme_ids=conversation.focus_scheme_ids,
-        )
+            personal_context=personal_context,
+        ))
     except ChatConfigurationError as exc:
         return jsonify(error=str(exc), remembered=remembered), 503
     except KnowledgeBaseUnavailableError as exc:
@@ -241,6 +253,12 @@ def chat():
         return jsonify(error=str(exc), remembered=remembered), 400
     if result.get("focus_scheme_ids"):
         conversation.focus_scheme_ids = result["focus_scheme_ids"]
+        for scheme_id in result["focus_scheme_ids"][:5]:
+            scheme = db.session.get(Scheme, scheme_id)
+            if scheme:
+                db.session.add(EpisodicMemory(user_id=user_id, conversation_id=conversation.id,
+                    source_message_id=user_message.id, scheme_id=scheme_id, event_type="SCHEME_DISCUSSION",
+                    summary=f"Discussed {scheme.name}: {body['message'][:700]}", verification="USER_STATED"))
     db.session.add(Message(conversation_id=conversation.id, role="assistant", content=result["answer"]))
     db.session.commit()
     return jsonify({**result, "conversation_id": conversation.id, "memory": list_memory(user_id),
@@ -253,6 +271,133 @@ def get_memory():
     user = _authenticated_user()
     profile = memory.get_or_create_profile(user.id)
     return jsonify(profile=profile.to_dict(), facts=list_memory(user.id))
+
+
+@api_bp.get("/tasks")
+@login_required
+def list_tasks():
+    user_id = _authenticated_user().id
+    rows = UserTask.query.filter_by(user_id=user_id).order_by(UserTask.updated_at.desc()).all()
+    return jsonify(tasks=[{"id": t.id, "goal_id": t.goal_id, "title": t.title, "description": t.description,
+        "next_action": t.next_action, "status": t.status, "priority": t.priority,
+        "due_at": t.due_at.isoformat() if t.due_at else None,
+        "snoozed_until": t.snoozed_until.isoformat() if t.snoozed_until else None,
+        "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+        "verified": t.verified, "notification_count": t.notification_count} for t in rows])
+
+
+@api_bp.patch("/tasks/<int:task_id>")
+@login_required
+def update_task(task_id):
+    user_id = _authenticated_user().id
+    task = UserTask.query.filter_by(id=task_id, user_id=user_id).first()
+    if task is None:
+        return jsonify(error="Task not found"), 404
+    body = _json_body()
+    if body is None or set(body) - {"status", "snooze_hours", "title"}:
+        return jsonify(error="Provide status, snooze_hours, or title"), 400
+    if "title" in body:
+        if not isinstance(body["title"], str) or not body["title"].strip() or len(body["title"]) > 200:
+            return jsonify(error="title must be a non-empty string up to 200 characters"), 400
+        task.title = body["title"].strip()
+    if "snooze_hours" in body:
+        hours = body["snooze_hours"]
+        if isinstance(hours, bool) or not isinstance(hours, int) or not 1 <= hours <= 720:
+            return jsonify(error="snooze_hours must be an integer from 1 to 720"), 400
+        from datetime import timedelta
+        task.status = "SNOOZED"
+        task.snoozed_until = datetime.utcnow() + timedelta(hours=hours)
+    if "status" in body:
+        status = body["status"]
+        allowed = {"PENDING", "IN_PROGRESS", "WAITING", "COMPLETED", "CANCELLED"}
+        if status not in allowed:
+            return jsonify(error="Unsupported task status"), 400
+        old = task.status
+        task.status = status
+        task.completed_at = datetime.utcnow() if status == "COMPLETED" else None
+        task.verified = status == "COMPLETED"
+        task.snoozed_until = None
+        db.session.add(TaskEvent(task_id=task.id, from_status=old, to_status=status, note="Updated by user"))
+    task.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify(task_id=task.id, status=task.status, snoozed_until=task.snoozed_until.isoformat() if task.snoozed_until else None)
+
+
+@api_bp.delete("/tasks/<int:task_id>")
+@login_required
+def delete_task(task_id):
+    task = UserTask.query.filter_by(id=task_id, user_id=_authenticated_user().id).first()
+    if task is None:
+        return jsonify(error="Task not found"), 404
+    db.session.delete(task)
+    db.session.commit()
+    return jsonify(deleted=task_id)
+
+
+@api_bp.get("/goals")
+@login_required
+def list_goals():
+    rows = UserGoal.query.filter_by(user_id=_authenticated_user().id).order_by(UserGoal.updated_at.desc()).all()
+    return jsonify(goals=[{"id": g.id, "title": g.title, "description": g.description, "status": g.status,
+                           "scheme_id": g.scheme_id, "task_ids": [t.id for t in g.tasks]} for g in rows])
+
+
+@api_bp.patch("/goals/<int:goal_id>")
+@login_required
+def update_goal(goal_id):
+    goal = UserGoal.query.filter_by(id=goal_id, user_id=_authenticated_user().id).first()
+    if goal is None:
+        return jsonify(error="Goal not found"), 404
+    body = _json_body()
+    if body is None or set(body) - {"status", "title"}:
+        return jsonify(error="Provide status or title"), 400
+    if "status" in body:
+        if body["status"] not in {"ACTIVE", "PAUSED", "COMPLETED", "CANCELLED"}:
+            return jsonify(error="Unsupported goal status"), 400
+        goal.status = body["status"]
+    if "title" in body:
+        if not isinstance(body["title"], str) or not body["title"].strip() or len(body["title"]) > 200:
+            return jsonify(error="title must be a non-empty string up to 200 characters"), 400
+        goal.title = body["title"].strip()
+    goal.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify(goal_id=goal.id, status=goal.status, title=goal.title)
+
+
+@api_bp.get("/notification-preferences")
+@login_required
+def get_notification_preferences():
+    pref = db.session.get(NotificationPreference, _authenticated_user().id)
+    return jsonify(enabled=pref.enabled if pref else True,
+                   quiet_start=pref.quiet_start if pref else None, quiet_end=pref.quiet_end if pref else None,
+                   timezone_offset_minutes=pref.timezone_offset_minutes if pref else 0)
+
+
+@api_bp.put("/notification-preferences")
+@login_required
+def put_notification_preferences():
+    body = _json_body()
+    if body is None or set(body) - {"enabled", "quiet_start", "quiet_end", "timezone_offset_minutes"}:
+        return jsonify(error="Invalid preference fields"), 400
+    if "enabled" in body and not isinstance(body["enabled"], bool):
+        return jsonify(error="enabled must be boolean"), 400
+    offset = body.get("timezone_offset_minutes")
+    if offset is not None and (isinstance(offset, bool) or not isinstance(offset, int) or not -720 <= offset <= 840):
+        return jsonify(error="timezone_offset_minutes must be between -720 and 840"), 400
+    for key in ("quiet_start", "quiet_end"):
+        value = body.get(key)
+        if value is not None and (not isinstance(value, str) or not __import__("re").fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value)):
+            return jsonify(error=f"{key} must use HH:MM"), 400
+    pref = db.session.get(NotificationPreference, _authenticated_user().id)
+    if pref is None:
+        pref = NotificationPreference(user_id=_authenticated_user().id)
+        db.session.add(pref)
+    for key in ("enabled", "quiet_start", "quiet_end", "timezone_offset_minutes"):
+        if key in body:
+            setattr(pref, key, body[key])
+    db.session.commit()
+    return jsonify(enabled=pref.enabled, quiet_start=pref.quiet_start, quiet_end=pref.quiet_end,
+                   timezone_offset_minutes=pref.timezone_offset_minutes)
 
 
 @api_bp.delete("/memory")
@@ -315,9 +460,16 @@ def clear_conversations():
     conversations = Conversation.query.filter_by(user_id=user.id).all()
     ids = [conversation.id for conversation in conversations]
     if ids:
+        message_ids = db.session.query(Message.id).filter(Message.conversation_id.in_(ids))
         UserMemory.query.filter(UserMemory.source_message_id.in_(
-            db.session.query(Message.id).filter(Message.conversation_id.in_(ids))
+            message_ids
         )).update({UserMemory.source_message_id: None}, synchronize_session=False)
+        EpisodicMemory.query.filter(EpisodicMemory.conversation_id.in_(ids)).update(
+            {EpisodicMemory.conversation_id: None, EpisodicMemory.source_message_id: None}, synchronize_session=False)
+        UserTask.query.filter(UserTask.conversation_id.in_(ids)).update(
+            {UserTask.conversation_id: None, UserTask.source_message_id: None}, synchronize_session=False)
+        TaskEvent.query.filter(TaskEvent.source_message_id.in_(message_ids)).update(
+            {TaskEvent.source_message_id: None}, synchronize_session=False)
         for conversation in conversations:
             db.session.delete(conversation)
     db.session.commit()

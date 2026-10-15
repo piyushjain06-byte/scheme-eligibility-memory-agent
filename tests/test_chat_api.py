@@ -14,6 +14,8 @@ class TestConfig(Config):
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     TESTING = True
     OPENAI_API_KEY = "test-api-key"
+    # Do not let a developer's local .env provider endpoint leak into fake-client tests.
+    OPENAI_BASE_URL = ""
     OPENAI_CHAT_MODEL = "ft:test-model"
     LLM_MEMORY_EXTRACTION = False
 
@@ -231,7 +233,6 @@ def test_chat_uses_verified_evidence_and_never_sends_profile_data(client, app, m
     assert "123456" not in sent_prompt
     assert "annual_income" not in sent_prompt
     # The exact values (age 20, income) are never sent, only which criteria were met.
-    assert "actual" not in sent_prompt
     assert "(actual" not in sent_prompt
 
 

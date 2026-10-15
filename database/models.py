@@ -43,6 +43,10 @@ class User(db.Model):
     )
     conversations = db.relationship("Conversation", backref="user", cascade="all, delete-orphan")
     memory_facts = db.relationship("UserMemory", backref="user", cascade="all, delete-orphan")
+    goals = db.relationship("UserGoal", backref="user", cascade="all, delete-orphan")
+    tasks = db.relationship("UserTask", backref="user", cascade="all, delete-orphan")
+    episodes = db.relationship("EpisodicMemory", backref="user", cascade="all, delete-orphan")
+    notification_preference = db.relationship("NotificationPreference", backref="user", uselist=False, cascade="all, delete-orphan")
 
     def set_password(self, raw_password: str) -> None:
         self.password_hash = generate_password_hash(raw_password)
@@ -365,6 +369,7 @@ class Notification(db.Model):
     title = db.Column(db.String(200))
     message = db.Column(db.Text)
     notification_type = db.Column(db.String(30))
+    dedupe_key = db.Column(db.String(200), unique=True, index=True)
     # NEW_ELIGIBILITY | RULE_CHANGE | PROFILE_CHANGE | GENERAL
 
     is_read = db.Column(db.Boolean, default=False)
@@ -453,6 +458,83 @@ class UserMemory(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     __table_args__ = (db.UniqueConstraint("user_id", "key"),)
+
+
+class EpisodicMemory(db.Model):
+    """Meaningful, user-owned event summaries linked to their source conversation."""
+    __tablename__ = "episodic_memories"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey("conversations.id"), index=True)
+    source_message_id = db.Column(db.Integer, db.ForeignKey("messages.id"), index=True)
+    scheme_id = db.Column(db.Integer, db.ForeignKey("schemes.id"), index=True)
+    event_type = db.Column(db.String(40), nullable=False, default="NOTE")
+    summary = db.Column(db.Text, nullable=False)
+    verification = db.Column(db.String(20), nullable=False, default="USER_STATED")
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+
+class UserGoal(db.Model):
+    """Long-running citizen goal. Status/progress are explicit and user scoped."""
+    __tablename__ = "user_goals"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    title = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text)
+    status = db.Column(db.String(20), nullable=False, default="ACTIVE", index=True)
+    scheme_id = db.Column(db.Integer, db.ForeignKey("schemes.id"), index=True)
+    due_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    tasks = db.relationship("UserTask", backref="goal", cascade="all, delete-orphan")
+
+
+class UserTask(db.Model):
+    """Persistent actionable work with reminder deduplication and per-user controls."""
+    __tablename__ = "user_tasks"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    goal_id = db.Column(db.Integer, db.ForeignKey("user_goals.id"), index=True)
+    scheme_id = db.Column(db.Integer, db.ForeignKey("schemes.id"), index=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey("conversations.id"), index=True)
+    source_message_id = db.Column(db.Integer, db.ForeignKey("messages.id"), index=True)
+    title = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text)
+    next_action = db.Column(db.String(300))
+    status = db.Column(db.String(24), nullable=False, default="PENDING", index=True)
+    priority = db.Column(db.String(12), nullable=False, default="NORMAL")
+    due_at = db.Column(db.DateTime)
+    snoozed_until = db.Column(db.DateTime)
+    last_notified_at = db.Column(db.DateTime)
+    notification_count = db.Column(db.Integer, nullable=False, default=0)
+    completed_at = db.Column(db.DateTime)
+    verified = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    events = db.relationship("TaskEvent", backref="task", cascade="all, delete-orphan")
+    __table_args__ = (db.Index("ix_user_tasks_dedupe", "user_id", "status", "title"),)
+
+
+class TaskEvent(db.Model):
+    """Append-only record of important task status transitions."""
+    __tablename__ = "task_events"
+    id = db.Column(db.Integer, primary_key=True)
+    task_id = db.Column(db.Integer, db.ForeignKey("user_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    from_status = db.Column(db.String(24))
+    to_status = db.Column(db.String(24), nullable=False)
+    source_message_id = db.Column(db.Integer, db.ForeignKey("messages.id"))
+    note = db.Column(db.String(500))
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+
+class NotificationPreference(db.Model):
+    __tablename__ = "notification_preferences"
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    enabled = db.Column(db.Boolean, nullable=False, default=True)
+    quiet_start = db.Column(db.String(5))
+    quiet_end = db.Column(db.String(5))
+    timezone_offset_minutes = db.Column(db.Integer, nullable=False, default=0)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class IngestionRun(db.Model):

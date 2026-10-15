@@ -30,6 +30,7 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+    OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
     OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
     EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")
 
