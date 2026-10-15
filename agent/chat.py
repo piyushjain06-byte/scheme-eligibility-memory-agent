@@ -5,7 +5,7 @@ import re
 import time
 
 from database.db import db
-from database.models import EligibilityEvaluation, Scheme, SchemeSource
+from database.models import DocumentChunk, EligibilityEvaluation, Scheme, SchemeSource
 from agent.eligibility import evaluate_scheme
 from agent.memory import get_memory_dict, get_or_create_profile
 
@@ -16,10 +16,13 @@ DISCLAIMER = ("Based on the criteria on file for each scheme. Confirm the curren
               "portal before applying.")
 _ACTUAL = re.compile(r"\s*\(actual:.*\)$")
 
-# With thousands of schemes loaded, only the best few may enter the prompt (keeps answers focused and fast).
-MAX_SCHEMES = 6
-EXCERPT_CHARS = 2500
-ELIGIBILITY_TEXT_CHARS = 600
+# Keep the prompt small: fewer tokens = faster answers and far fewer rate-limit (429) errors.
+MAX_SCHEMES = 3
+EXCERPT_CHARS = 700
+ELIGIBILITY_TEXT_CHARS = 400
+RETRIEVE_TOP_K = 2
+HISTORY_MESSAGES = 2
+MODEL_ATTEMPTS = 3
 
 
 class ChatConfigurationError(Exception):
@@ -28,6 +31,10 @@ class ChatConfigurationError(Exception):
 
 class KnowledgeBaseUnavailableError(Exception):
     """Raised when no reviewed official scheme sources are available."""
+
+
+class ModelBusyError(KnowledgeBaseUnavailableError):
+    """Raised when the language model keeps failing with rate-limit / overload errors."""
 
 
 def _search_terms(message):
@@ -222,18 +229,44 @@ def _no_match_response(user_id, message, history):
 
 
 def _complete_with_retry(client, **kwargs):
-    """Call the model; retry a few times when the provider is overloaded (503) or rate limiting (429)."""
-    for attempt in range(4):
+    """
+    Call the model; retry a couple of times when the provider is overloaded (503) or rate limiting (429).
+    The SDK's own automatic retries are switched off so one chat message never turns into a dozen requests.
+    """
+    if hasattr(client, "with_options"):  # simple fake clients used in tests do not have it
+        client = client.with_options(max_retries=0)
+    for attempt in range(MODEL_ATTEMPTS):
         try:
             return client.chat.completions.create(**kwargs)
         except Exception as exc:
-            if getattr(exc, "status_code", None) not in (429, 500, 502, 503, 504):
+            status = getattr(exc, "status_code", None)
+            if status not in (429, 500, 502, 503, 504):
                 raise
-            logger.warning("Model busy (HTTP %s), attempt %d/4", getattr(exc, "status_code", "?"), attempt + 1)
-            if attempt < 3:
-                time.sleep(3 * 2 ** attempt)  # 3s, 6s, 12s
-    raise KnowledgeBaseUnavailableError(
-        "The AI model is very busy right now. Please try again in a minute.")
+            logger.warning("Model busy (HTTP %s) attempt %d/%d: %s",
+                           status, attempt + 1, MODEL_ATTEMPTS, str(exc)[:400])
+            if attempt < MODEL_ATTEMPTS - 1:
+                time.sleep(2 * 2 ** attempt)  # 2s, 4s
+    raise ModelBusyError("The AI model is very busy right now. Please try again in a minute.")
+
+
+def _fallback_answer(evaluations, citation_by_scheme):
+    """Rule-based reply used when the language model is unavailable, so the citizen still gets an answer."""
+    labels = {
+        "ELIGIBLE": "you appear to meet the listed criteria",
+        "NOT_ELIGIBLE": "you do not meet the listed criteria",
+        "CANNOT_CHECK": "please read the official criteria on the portal",
+    }
+    lines = ["The AI writer is busy right now, but here are the rule-based results:"]
+    for row in evaluations[:3]:
+        if row["status"] == "NEEDS_INFORMATION":
+            fields = ", ".join(row["missing_fields"]) or "a few profile details"
+            text = f"I need your {fields} to check"
+        else:
+            text = labels.get(row["status"], "see the official portal")
+        tag = f" [{citation_by_scheme[row['scheme_id']]}]" if row["scheme_id"] in citation_by_scheme else ""
+        lines.append(f"- {row['scheme']}{tag}: {text}")
+    lines.append("Please confirm on the official portal before applying. Ask again in a minute for a fuller answer.")
+    return "\n".join(lines)
 
 
 SYSTEM_PROMPT = (
@@ -262,6 +295,10 @@ SYSTEM_PROMPT = (
 )
 
 
+def _any_embedded_chunks():
+    return db.session.query(DocumentChunk.id).filter(DocumentChunk.embedding.isnot(None)).first() is not None
+
+
 def answer_chat(user_id, message, api_key, model, history=None, embedding_model="text-embedding-3-small",
                 focus_scheme_ids=None, personal_context=None):
     """Answer using reviewed evidence; profile values never leave this process."""
@@ -279,7 +316,7 @@ def answer_chat(user_id, message, api_key, model, history=None, embedding_model=
         raise ChatConfigurationError("OPENAI_API_KEY is not configured")
 
     safe_history = [item for item in (history or []) if isinstance(item, dict)
-                    and "DEMO / TEST DATA ONLY" not in item.get("content", "")]
+                    and "DEMO / TEST DATA ONLY" not in item.get("content", "")][-HISTORY_MESSAGES:]
     history_text = " ".join(item.get("content", "") for item in safe_history)
     retrieval_query = f"{message} {history_text}".strip()
     terms = _search_terms(retrieval_query)
@@ -301,7 +338,7 @@ def answer_chat(user_id, message, api_key, model, history=None, embedding_model=
                 best_by_scheme[source.scheme_id] = (source, score)
         selected = (
             [entry[0] for entry in sorted(best_by_scheme.values(), key=lambda e: -e[1])
-             if entry[1] == best_score][:5]
+             if entry[1] == best_score][:MAX_SCHEMES]
             if best_score else []
         )
 
@@ -311,14 +348,16 @@ def answer_chat(user_id, message, api_key, model, history=None, embedding_model=
     client = make_client(api_key)
     from agent.rag import retrieve
     query_vector = None
-    if hasattr(client, "embeddings"):
+    # Only embed the question when stored chunks actually have vectors; otherwise retrieval is lexical anyway
+    # and the embedding call would just waste provider quota.
+    if hasattr(client, "embeddings") and _any_embedded_chunks():
         try:
             query_vector = client.embeddings.create(model=embedding_model, input=retrieval_query).data[0].embedding
         except Exception:
             # Keep chat available with lexical retrieval when embedding service is unavailable.
             logger.exception("Query embedding failed; using lexical document retrieval")
             query_vector = None
-    retrieved = retrieve(retrieval_query, top_k=5, embedding=query_vector)
+    retrieved = retrieve(retrieval_query, top_k=RETRIEVE_TOP_K, embedding=query_vector)
     # A chunk can enter the prompt only when its scheme has reviewed source evidence.
     reviewed_by_scheme = {source.scheme_id: source for source in _one_source_per_scheme(sources)}
     if not eligibility_question:
@@ -330,7 +369,7 @@ def answer_chat(user_id, message, api_key, model, history=None, embedding_model=
                 present.add(source.scheme_id)
         if not selected and focus_scheme_ids:
             # A follow-up ("what documents do I need?") keeps the topic of the previous answer.
-            selected = [reviewed_by_scheme[i] for i in focus_scheme_ids if i in reviewed_by_scheme][:5]
+            selected = [reviewed_by_scheme[i] for i in focus_scheme_ids if i in reviewed_by_scheme][:MAX_SCHEMES]
         selected = selected[:MAX_SCHEMES]
     if not selected:
         return _no_match_response(user_id, message, history)
@@ -351,31 +390,42 @@ def answer_chat(user_id, message, api_key, model, history=None, embedding_model=
     retrieved = [row for row in retrieved if row["scheme_id"] in verified_by_scheme]
     for row in retrieved:
         row["citation"] = f"S{verified_by_scheme[row['scheme_id']].id}"
+    # Send only what the model needs; the excerpt already contains objective, eligibility and benefits.
     evidence = [
-        {"source_id": source.id, "citation": f"S{source.id}", "scheme": source.scheme.name,
-         "description": (source.scheme.description or "")[:EXCERPT_CHARS], "benefits": (source.scheme.benefits or "")[:EXCERPT_CHARS],
-         "excerpt": (source.excerpt or "")[:EXCERPT_CHARS]}
+        {"citation": f"S{source.id}", "scheme": source.scheme.name,
+         "excerpt": (source.excerpt or source.scheme.description or "")[:EXCERPT_CHARS]}
         for source in selected
     ]
-    response = _complete_with_retry(
-        client,
-        model=model,
-        temperature=0,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"Question: {message}\n\n"
-                    f"Recent assistant replies (continuity only): {safe_history}\n\n"
-                    f"Relevant personal memory (user statements, for continuity only): {personal_context or []}\n\n"
-                    f"Reviewed evidence: {evidence}\n\n"
-                    f"Retrieved document chunks with citations: {retrieved}\n\n"
-                    f"Deterministic eligibility results: {_prompt_safe(evaluations)}"
-                ),
-            },
-        ],
-    )
+    chunks_for_prompt = [{"citation": row["citation"], "scheme": row["scheme_name"], "text": row["text"]}
+                         for row in retrieved]
+    try:
+        response = _complete_with_retry(
+            client,
+            model=model,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Question: {message}\n\n"
+                        f"Recent assistant replies (continuity only): {safe_history}\n\n"
+                        f"Relevant personal memory (user statements, for continuity only): {personal_context or []}\n\n"
+                        f"Reviewed evidence: {evidence}\n\n"
+                        f"Retrieved document chunks with citations: {chunks_for_prompt}\n\n"
+                        f"Deterministic eligibility results: {_prompt_safe(evaluations)}"
+                    ),
+                },
+            ],
+        )
+    except ModelBusyError:
+        # The deterministic engine already has the verdicts, so answer from those instead of failing.
+        citation_by_scheme = {source.scheme_id: f"S{source.id}" for source in selected}
+        shown_fallback = [c for c in citations if c["scheme"] in {r["scheme"] for r in evaluations[:3]}] or citations[:3]
+        return {"answer": _fallback_answer(evaluations, citation_by_scheme), "citations": shown_fallback,
+                "eligibility": evaluations, "disclaimer": DISCLAIMER if evaluations else None,
+                "focus_scheme_ids": [source.scheme_id for source in selected]}
+
     answer = response.choices[0].message.content
     if not answer:
         raise RuntimeError("The language model returned an empty answer")
