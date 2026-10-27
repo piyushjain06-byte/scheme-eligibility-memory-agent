@@ -36,7 +36,7 @@ class Config:
 
     # Optional LLM-assisted fact extraction (off by default). Output is validated like the rule-based path.
     LLM_MEMORY_EXTRACTION = _flag("LLM_MEMORY_EXTRACTION", "false")
-    OPENAI_EXTRACTION_MODEL = os.environ.get("OPENAI_EXTRACTION_MODEL", "gpt-4o-mini")
+    OPENAI_EXTRACTION_MODEL = os.environ.get("OPENAI_EXTRACTION_MODEL", os.environ.get("OPENAI_CHAT_MODEL", "gemini-3.5-flash-lite"))
 
     # Privacy: registration must include explicit consent to store profile details (DPDP-style notice).
     REQUIRE_CONSENT = _flag("REQUIRE_CONSENT", "true")

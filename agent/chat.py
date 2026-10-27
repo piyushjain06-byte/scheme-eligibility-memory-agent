@@ -6,8 +6,9 @@ import time
 
 from database.db import db
 from database.models import DocumentChunk, EligibilityEvaluation, Scheme, SchemeSource
-from agent.eligibility import evaluate_scheme
+from agent.eligibility import evaluate_scheme, scheme_state
 from agent.memory import get_memory_dict, get_or_create_profile
+from agent.normalize import canonical_state
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ ELIGIBILITY_TEXT_CHARS = 400
 RETRIEVE_TOP_K = 2
 HISTORY_MESSAGES = 2
 MODEL_ATTEMPTS = 3
+STATE_MATCH_BOOST = 5  # a scheme from the citizen's own state should outrank generic keyword matches
 
 
 class ChatConfigurationError(Exception):
@@ -42,6 +44,7 @@ def _search_terms(message):
         "about", "am", "and", "are", "can", "for", "from", "how", "i", "in",
         "is", "me", "my", "of", "on", "the", "to", "what", "which", "with",
         "apply", "schemes", "scheme", "tell", "any", "some", "get", "give",
+        "im", "also", "study", "studying",
     }
     return {
         word.strip(".,?!:;()[]{}\"'").lower()
@@ -73,7 +76,19 @@ def _profile_terms(user_id):
     return terms
 
 
-def _source_matches(source, terms):
+def _user_state(user_id):
+    """Canonical state/UT the citizen lives in, or None if unknown."""
+    return canonical_state(get_memory_dict(user_id).get("state"))
+
+
+def _drop_other_states(sources, user_state):
+    """A STATE scheme of a different state can never apply to this citizen, so it is never a candidate."""
+    if not user_state:
+        return sources
+    return [source for source in sources if scheme_state(source.scheme) in (None, user_state)]
+
+
+def _source_matches(source, terms, user_state=None):
     scheme = source.scheme
     searchable = " ".join(
         str(value or "")
@@ -82,7 +97,11 @@ def _source_matches(source, terms):
             source.jurisdiction, source.publisher, source.source_title, source.excerpt,
         )
     ).lower()
-    return sum(1 for term in terms if term in searchable)
+    # Match at word starts only, so short terms do not hit the middle of unrelated words.
+    score = sum(1 for term in terms if re.search(r"\b" + re.escape(term), searchable))
+    if user_state and scheme_state(scheme) == user_state:
+        score += STATE_MATCH_BOOST
+    return score
 
 
 def _one_source_per_scheme(sources):
@@ -315,18 +334,26 @@ def answer_chat(user_id, message, api_key, model, history=None, embedding_model=
     if not api_key:
         raise ChatConfigurationError("OPENAI_API_KEY is not configured")
 
+    # Schemes that belong to a different state than the citizen's are never candidates.
+    user_state = _user_state(user_id)
+    sources = _drop_other_states(sources, user_state)
+    if not sources:
+        return _no_match_response(user_id, message, history)
+
     safe_history = [item for item in (history or []) if isinstance(item, dict)
                     and "DEMO / TEST DATA ONLY" not in item.get("content", "")][-HISTORY_MESSAGES:]
     history_text = " ".join(item.get("content", "") for item in safe_history)
-    retrieval_query = f"{message} {history_text}".strip()
+    # Search on the new message; only fall back to the previous replies for very short follow-ups,
+    # otherwise the old answer drowns out what the citizen just asked.
+    retrieval_query = message if len(_search_terms(message)) >= 2 else f"{message} {history_text}".strip()
     terms = _search_terms(retrieval_query)
-    scored = [(source, _source_matches(source, terms)) for source in sources]
+    scored = [(source, _source_matches(source, terms, user_state)) for source in sources]
     eligibility_question = _is_eligibility_question(message)
     if eligibility_question:
         # Rank every scheme by the question plus the citizen's own profile (used locally only), keep the best few.
         rank_terms = terms | _profile_terms(user_id)
         ranked = sorted(_one_source_per_scheme(sources),
-                        key=lambda source: (-_source_matches(source, rank_terms), source.id))
+                        key=lambda source: (-_source_matches(source, rank_terms, user_state), source.id))
         selected = ranked[:MAX_SCHEMES]
     else:
         best_score = max((score for _, score in scored), default=0)
@@ -358,7 +385,8 @@ def answer_chat(user_id, message, api_key, model, history=None, embedding_model=
             logger.exception("Query embedding failed; using lexical document retrieval")
             query_vector = None
     retrieved = retrieve(retrieval_query, top_k=RETRIEVE_TOP_K, embedding=query_vector)
-    # A chunk can enter the prompt only when its scheme has reviewed source evidence.
+    # A chunk can enter the prompt only when its scheme has reviewed source evidence
+    # (and, because `sources` was filtered above, belongs to the citizen's state or is not state-specific).
     reviewed_by_scheme = {source.scheme_id: source for source in _one_source_per_scheme(sources)}
     if not eligibility_question:
         present = {source.scheme_id for source in selected}
@@ -376,6 +404,13 @@ def answer_chat(user_id, message, api_key, model, history=None, embedding_model=
 
     # Personalisation for every question: verdicts are computed locally and used to rank schemes.
     evaluations = _build_evaluations(user_id, selected)
+
+    # Do not recommend schemes the citizen definitely does not qualify for (keep them only if nothing else is left).
+    keep = {row["scheme_id"] for row in evaluations if row["status"] != "NOT_ELIGIBLE"}
+    if keep:
+        selected = [source for source in selected if source.scheme_id in keep]
+        evaluations = [row for row in evaluations if row["scheme_id"] in keep]
+
     rank = {row["scheme_id"]: STATUS_ORDER.get(row["status"], 9) for row in evaluations}
     selected.sort(key=lambda source: rank.get(source.scheme_id, 9))
 

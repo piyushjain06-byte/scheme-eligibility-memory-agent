@@ -223,12 +223,17 @@ def chat():
     llm = None
     if current_app.config.get("LLM_MEMORY_EXTRACTION") and current_app.config.get("OPENAI_API_KEY"):
         llm = {"api_key": current_app.config["OPENAI_API_KEY"],
-               "model": current_app.config.get("OPENAI_EXTRACTION_MODEL", "gpt-4o-mini")}
+               "model": current_app.config.get("OPENAI_EXTRACTION_MODEL",
+                          current_app.config.get("OPENAI_CHAT_MODEL", "gemini-3.5-flash-lite"))}
     remembered = save_explicit_facts(user_id, body["message"], user_message.id, llm=llm)
     process_task_message(user_id, body["message"], conversation.id, user_message.id)
     personal_context = retrieve_personal_context(user_id, body["message"])
     recall_request = any(term in body["message"].lower() for term in
-                         ("last week", "previous", "previously", "what did we", "which scheme did", "what documents did i still need", "continue helping", "continue my"))
+                         ("last week", "previous", "previously", "what did we", "which scheme did",
+                          "what documents did i still need", "continue helping", "continue my",
+                          "what did you say", "what did i say", "recall", "remember what",
+                          "from before", "as i said", "what i told you", "from last time",
+                          "earlier you said", "you told me", "continue from", "going back to"))
     try:
         result = ({"answer": "Here is what I found in your saved history: " + " ".join(personal_context),
                    "citations": [], "eligibility": [], "focus_scheme_ids": conversation.focus_scheme_ids or []}
