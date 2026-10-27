@@ -23,7 +23,7 @@ EXCERPT_CHARS = 700
 ELIGIBILITY_TEXT_CHARS = 400
 RETRIEVE_TOP_K = 2
 HISTORY_MESSAGES = 2
-MODEL_ATTEMPTS = 3
+MODEL_ATTEMPTS = 2
 STATE_MATCH_BOOST = 5  # a scheme from the citizen's own state should outrank generic keyword matches
 
 
@@ -259,12 +259,15 @@ def _complete_with_retry(client, **kwargs):
             return client.chat.completions.create(**kwargs)
         except Exception as exc:
             status = getattr(exc, "status_code", None)
-            if status not in (429, 500, 502, 503, 504):
+            timed_out = type(exc).__name__ in {"APITimeoutError", "APIConnectionError"}
+            if status not in (429, 500, 502, 503, 504) and not timed_out:
                 raise
             logger.warning("Model busy (HTTP %s) attempt %d/%d: %s",
                            status, attempt + 1, MODEL_ATTEMPTS, str(exc)[:400])
+            if timed_out:
+                break  # the wait was already spent; answer from the rules instead
             if attempt < MODEL_ATTEMPTS - 1:
-                time.sleep(2 * 2 ** attempt)  # 2s, 4s
+                time.sleep(1.5)
     raise ModelBusyError("The AI model is very busy right now. Please try again in a minute.")
 
 
@@ -323,10 +326,13 @@ def answer_chat(user_id, message, api_key, model, history=None, embedding_model=
     """Answer using reviewed evidence; profile values never leave this process."""
     if not isinstance(message, str) or not message.strip():
         raise ValueError("message must be a non-empty string")
+    from sqlalchemy.orm import contains_eager
     sources = (
         SchemeSource.query.filter_by(status="VERIFIED")
         .join(Scheme)
         .filter(Scheme.active.is_(True))
+        .options(contains_eager(SchemeSource.scheme).selectinload(Scheme.sources),
+                 contains_eager(SchemeSource.scheme).selectinload(Scheme.rules))
         .all()
     )
     if not sources:
@@ -377,14 +383,15 @@ def answer_chat(user_id, message, api_key, model, history=None, embedding_model=
     query_vector = None
     # Only embed the question when stored chunks actually have vectors; otherwise retrieval is lexical anyway
     # and the embedding call would just waste provider quota.
-    if hasattr(client, "embeddings") and _any_embedded_chunks():
+    if not eligibility_question and hasattr(client, "embeddings") and _any_embedded_chunks():
         try:
             query_vector = client.embeddings.create(model=embedding_model, input=retrieval_query).data[0].embedding
         except Exception:
             # Keep chat available with lexical retrieval when embedding service is unavailable.
             logger.exception("Query embedding failed; using lexical document retrieval")
             query_vector = None
-    retrieved = retrieve(retrieval_query, top_k=RETRIEVE_TOP_K, embedding=query_vector)
+    retrieved = retrieve(retrieval_query, top_k=RETRIEVE_TOP_K, embedding=query_vector,
+                         scheme_ids=[s.scheme_id for s in selected] if eligibility_question else None)
     # A chunk can enter the prompt only when its scheme has reviewed source evidence
     # (and, because `sources` was filtered above, belongs to the citizen's state or is not state-specific).
     reviewed_by_scheme = {source.scheme_id: source for source in _one_source_per_scheme(sources)}

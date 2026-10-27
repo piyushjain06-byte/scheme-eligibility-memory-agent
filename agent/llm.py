@@ -19,6 +19,11 @@ def make_client(api_key):
     except RuntimeError:
         base_url = os.environ.get("OPENAI_BASE_URL", "")
     base_url = (base_url or "").strip()
+    timeout = float(os.environ.get("LLM_TIMEOUT_SECONDS", "25"))
+    kwargs = {"api_key": api_key}
     if base_url:
-        return OpenAI(api_key=api_key, base_url=base_url)
-    return OpenAI(api_key=api_key)
+        kwargs["base_url"] = base_url
+    try:
+        return OpenAI(**kwargs, timeout=timeout, max_retries=0)
+    except TypeError:  # simple fake clients used in tests
+        return OpenAI(**kwargs)

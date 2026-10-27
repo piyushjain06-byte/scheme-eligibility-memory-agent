@@ -160,7 +160,7 @@ def _terms(text: str) -> set[str]:
 
 
 def retrieve(query: str, *, top_k=5, embedding=None, include_demo=False,
-             verified_only=True, category=None, scheme_id=None, source_type=None,
+             verified_only=True, category=None, scheme_id=None, scheme_ids=None, source_type=None,
              min_lexical=MIN_LEXICAL_SCORE, min_semantic=MIN_SEMANTIC_SCORE):
     q = (DocumentChunk.query.join(GovernmentDocument).join(Scheme)
          .filter(Scheme.active.is_(True), GovernmentDocument.is_current.is_(True))
@@ -178,6 +178,8 @@ def retrieve(query: str, *, top_k=5, embedding=None, include_demo=False,
         q = q.filter(Scheme.category == category)
     if scheme_id is not None:
         q = q.filter(Scheme.id == scheme_id)
+    if scheme_ids is not None:
+        q = q.filter(Scheme.id.in_(list(scheme_ids)))
     if source_type:
         q = q.filter(GovernmentDocument.source_type == source_type)
     terms = _terms(query)
