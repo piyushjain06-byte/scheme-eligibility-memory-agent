@@ -77,7 +77,8 @@ Deliberately, **the eligibility decision itself is never made by an LLM.** An LL
 ## Current implementation
 
 - Persistent citizen profile memory with registration, login, and profile APIs
-- Persistent conversation history and explicit scheme-relevant memory facts, with view/update/delete controls
+- Persistent profile memory, searchable first-person details from chat history, and view/update/delete controls
+- Direct, private answers to personal bio and memory questions without requiring scheme data or sending profile facts to an LLM
 - Deterministic eligibility engine with `==`, `!=`, `<`, `<=`, `>`, `>=`,
   `between`, `in`, and nested `AND` / `OR` / `NOT`
 - Minimal browser chat page and JSON chat endpoint
@@ -339,11 +340,15 @@ are kept with indexed chunks.
 
 Explicit statements in chat can populate structured profile memory (such as
 age, state, student status, education, employment and income). Messages and
-conversations persist. Users can view/edit/delete facts and clear profile
-memory independently from conversation history. The current extractor uses
-simple explicit phrasing and does not save uncertain inferences. Profile
-values are used locally by deterministic eligibility checks and are not sent
-to OpenAI; recent conversation text is sent as context for answer phrasing.
+conversations persist, and first-person details can be recalled from the user's
+own saved chat history. Questions about the user's profile or remembered details
+are answered locally; they do not require scheme data or a hosted LLM. Users can
+view/edit/delete profile facts and clear profile memory independently from
+conversation history. The current extractor uses simple explicit phrasing and
+does not infer uncertain profile values. Profile values are used locally by
+deterministic eligibility checks and are not sent to OpenAI. For scheme
+questions, the current user message and relevant continuity context may be sent
+to the configured OpenAI-compatible provider.
 
 Registration and protected endpoints use Flask's signed session cookie. The
 demo admin is for local development only; do not deploy its credentials.
@@ -407,9 +412,12 @@ run automatically, and no API key or training corpus is included in this repo.
 
 Direct statements such as “I still need my income certificate” can create a
 user-owned task; scholarship application intent can also create an active goal.
-Tasks are visible through `GET /api/tasks` and can be updated, completed,
-cancelled, or snoozed with `PATCH /api/tasks/<id>`. Goals use `GET /api/goals`
-and `PATCH /api/goals/<id>`. Notification preferences are available at
+Scheme recommendations from a search are saved as open application tasks and
+shown in in-app notifications. Say “I finished applying for [scheme name]” to
+complete the matching task; if only one scheme task is open, “I finished
+applying” is enough. Tasks are visible through `GET /api/tasks` and can be
+updated, completed, cancelled, or snoozed with `PATCH /api/tasks/<id>`. Goals
+use `GET /api/goals` and `PATCH /api/goals/<id>`. Notification preferences are available at
 `GET/PUT /api/notification-preferences` (`enabled`, `quiet_start`, `quiet_end`).
 
 After deploying a release with these tables, run the additive schema upgrader:

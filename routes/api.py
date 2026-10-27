@@ -3,6 +3,7 @@
 from datetime import date, datetime, timezone
 from functools import wraps
 import math
+import re
 from urllib.parse import urlparse
 
 from flask import Blueprint, current_app, jsonify, request, session
@@ -13,14 +14,23 @@ from agent import memory
 from agent.chat import (
     ChatConfigurationError,
     KnowledgeBaseUnavailableError,
+    acknowledge_personal_disclosure,
+    answer_personal_memory_question,
     answer_chat,
+    is_additional_scheme_request,
 )
 from agent.eligibility import rule_to_text
 from agent.normalize import canonical_state
 from agent.ratelimit import rate_limit
 from agent.rule_engine import InvalidRuleError, evaluate_rule
 from agent.user_memory import confirm_memory, delete_memory, list_memory, save_explicit_facts
-from agent.task_detection import process_message as process_task_message
+from agent.task_detection import (
+    complete_scheme_application_tasks,
+    create_scheme_application_tasks,
+    is_application_completion_message,
+    is_scheme_search_request,
+    process_message as process_task_message,
+)
 from agent.memory_retrieval import retrieve_personal_context
 
 api_bp = Blueprint("api", __name__)
@@ -227,6 +237,7 @@ def chat():
                           current_app.config.get("OPENAI_CHAT_MODEL", "gemini-3.5-flash-lite"))}
     remembered = save_explicit_facts(user_id, body["message"], user_message.id, llm=llm)
     process_task_message(user_id, body["message"], conversation.id, user_message.id)
+    completed_applications = complete_scheme_application_tasks(user_id, body["message"], user_message.id)
     personal_context = retrieve_personal_context(user_id, body["message"])
     recall_request = any(term in body["message"].lower() for term in
                          ("last week", "previous", "previously", "what did we", "which scheme did",
@@ -234,28 +245,94 @@ def chat():
                           "what did you say", "what did i say", "recall", "remember what",
                           "from before", "as i said", "what i told you", "from last time",
                           "earlier you said", "you told me", "continue from", "going back to"))
+    personal_answer = answer_personal_memory_question(user_id, body["message"])
+    disclosure_answer = acknowledge_personal_disclosure(body["message"], remembered)
     try:
-        result = ({"answer": "Here is what I found in your saved history: " + " ".join(personal_context),
-                   "citations": [], "eligibility": [], "focus_scheme_ids": conversation.focus_scheme_ids or []}
-                  if recall_request and personal_context else
-                  {"answer": "I don't have a saved relevant conversation or unfinished task to recall yet. Tell me which application or scheme you mean, and I can help continue.",
-                   "citations": [], "eligibility": [], "focus_scheme_ids": conversation.focus_scheme_ids or []}
-                  if recall_request else answer_chat(
-            user_id=user_id,
-            message=body["message"],
-            api_key=current_app.config.get("OPENAI_API_KEY"),
-            model=current_app.config.get("OPENAI_CHAT_MODEL"),
-            history=history,
-            embedding_model=current_app.config.get("EMBEDDING_MODEL", "text-embedding-3-small"),
-            focus_scheme_ids=conversation.focus_scheme_ids,
-            personal_context=personal_context,
-        ))
+        if completed_applications:
+            names = ", ".join(
+                scheme.name for task in completed_applications
+                if (scheme := db.session.get(Scheme, task.scheme_id)) is not None
+            )
+            result = {
+                "answer": f"I marked your application for {names} as complete and removed it from your unfinished tasks.",
+                "citations": [], "eligibility": [], "focus_scheme_ids": conversation.focus_scheme_ids or [],
+            }
+        elif is_application_completion_message(body["message"]) and UserTask.query.filter_by(
+            user_id=user_id
+        ).filter(UserTask.scheme_id.isnot(None), UserTask.status.in_(
+            ["PENDING", "IN_PROGRESS", "WAITING", "SNOOZED"]
+        )).count() > 0:
+            open_tasks = UserTask.query.filter_by(user_id=user_id).filter(
+                UserTask.scheme_id.isnot(None),
+                UserTask.status.in_(["PENDING", "IN_PROGRESS", "WAITING", "SNOOZED"]),
+            ).order_by(UserTask.updated_at.desc()).all()
+            options = ", ".join(task.title.removeprefix("Apply for ") for task in open_tasks)
+            result = {
+                "answer": f"Which scheme did you apply for? I still have these unfinished applications: {options}.",
+                "citations": [], "eligibility": [], "focus_scheme_ids": conversation.focus_scheme_ids or [],
+            }
+        elif personal_answer is not None and not is_scheme_search_request(body["message"]):
+            result = {"answer": personal_answer, "citations": [], "eligibility": [],
+                      "focus_scheme_ids": conversation.focus_scheme_ids or []}
+        elif recall_request and not is_scheme_search_request(body["message"]):
+            answer = ("Here is what I found in your saved history: " + " ".join(personal_context)
+                      if personal_context else
+                      "I don't have a saved relevant conversation or unfinished task to recall yet. "
+                      "Tell me which application or scheme you mean, and I can help continue.")
+            result = {"answer": answer, "citations": [], "eligibility": [],
+                      "focus_scheme_ids": conversation.focus_scheme_ids or []}
+        elif disclosure_answer is not None and not is_scheme_search_request(body["message"]):
+            result = {"answer": disclosure_answer, "citations": [], "eligibility": [],
+                      "focus_scheme_ids": conversation.focus_scheme_ids or []}
+        else:
+            excluded_scheme_ids = set()
+            if is_additional_scheme_request(body["message"]):
+                cited_source_ids = {
+                    int(source_id)
+                    for item in conversation.messages
+                    if item.role == "assistant"
+                    for source_id in re.findall(r"\[S(\d+)\]", item.content)
+                }
+                if cited_source_ids:
+                    excluded_scheme_ids = {
+                        source.scheme_id
+                        for source in SchemeSource.query.filter(
+                            SchemeSource.id.in_(cited_source_ids),
+                            SchemeSource.status == "VERIFIED",
+                        ).all()
+                    }
+            result = answer_chat(
+                user_id=user_id,
+                message=body["message"],
+                api_key=current_app.config.get("OPENAI_API_KEY"),
+                model=current_app.config.get("OPENAI_CHAT_MODEL"),
+                history=history,
+                embedding_model=current_app.config.get("EMBEDDING_MODEL", "text-embedding-3-small"),
+                focus_scheme_ids=conversation.focus_scheme_ids,
+                personal_context=personal_context,
+                exclude_scheme_ids=excluded_scheme_ids,
+            )
     except ChatConfigurationError as exc:
         return jsonify(error=str(exc), remembered=remembered), 503
     except KnowledgeBaseUnavailableError as exc:
         return jsonify(error=str(exc), remembered=remembered), 503
     except ValueError as exc:
         return jsonify(error=str(exc), remembered=remembered), 400
+    tracked_tasks = []
+    if is_scheme_search_request(body["message"]) and not result.get("demo"):
+        ineligible_ids = {
+            row["scheme_id"] for row in result.get("eligibility", [])
+            if row.get("status") == "NOT_ELIGIBLE"
+        }
+        recommended_ids = [
+            scheme_id for scheme_id in result.get("focus_scheme_ids", [])
+            if scheme_id not in ineligible_ids
+        ]
+        tracked_tasks = create_scheme_application_tasks(
+            user_id, recommended_ids, conversation.id, user_message.id,
+        )
+    if tracked_tasks:
+        result["tracked_schemes"] = [task.title.removeprefix("Apply for ") for task in tracked_tasks]
     if result.get("focus_scheme_ids"):
         conversation.focus_scheme_ids = result["focus_scheme_ids"]
         for scheme_id in result["focus_scheme_ids"][:5]:

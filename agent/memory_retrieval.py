@@ -1,5 +1,86 @@
 """Compact keyword based personal-memory retrieval, isolated from scheme RAG."""
-from database.models import EpisodicMemory, UserGoal, UserTask
+import re
+
+from agent.extraction import extract_explicit_facts
+from database.models import Conversation, EpisodicMemory, Message, UserGoal, UserTask
+
+_MEMORY_STOP_WORDS = {
+    "about", "and", "are", "did", "do", "for", "from", "have", "how", "is", "it",
+    "me", "my", "of", "the", "this", "to", "was", "what", "when", "where", "which",
+    "who", "with", "you",
+}
+_USER_DISCLOSURE = re.compile(
+    r"^\s*(?:i(?:['’](?:m|ve)|\s+(?:am|have|like|love|prefer|enjoy|work|live|study|"
+    r"studied|speak|play|follow|was born|own|grew up))\b|"
+    r"my\s+(?:name|favorite|favourite|hobby|job|goal|dream|language|interest|"
+    r"music|sport|food|color|colour)\b)",
+    re.IGNORECASE,
+)
+_MEMORY_TOPIC = re.compile(
+    r"\bmy\s+(favorite|favourite)\s+([a-z][a-z ]{0,30}?)\s+(?:is|are|was|were)\b",
+    re.IGNORECASE,
+)
+
+
+def _memory_sentences(content, terms, broad_recall):
+    """Keep only relevant non-profile sentences; profile facts have a canonical latest value."""
+    sentences = re.split(r"(?<=[.!?])\s+|[\r\n]+", content)
+    selected = []
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence or extract_explicit_facts(sentence):
+            continue
+        words = {word.lower().strip(".,?!:;()[]{}\"'") for word in sentence.split()}
+        if broad_recall or terms & words:
+            selected.append(sentence)
+    return selected
+
+
+def is_user_disclosure(text):
+    """Whether a message starts with a plain first-person personal statement."""
+    return isinstance(text, str) and _USER_DISCLOSURE.search(text) is not None
+
+
+def retrieve_user_statements(user_id, query, limit=4):
+    """Find relevant first-person statements in this user's saved chat history."""
+    query_text = (query or "").strip()
+    terms = {
+        word.lower().strip(".,?!:;()[]{}\"'")
+        for word in query_text.split()
+        if len(word) > 2 and word.lower().strip(".,?!:;()[]{}\"'") not in _MEMORY_STOP_WORDS
+    }
+    query_lower = query_text.lower()
+    broad_recall = any(phrase in query_lower for phrase in (
+        "what do you know about me", "what do you remember about me", "tell me about myself",
+        "what have i told you about myself", "what did i tell you about myself",
+        "my bio", "my profile",
+    ))
+    messages = (
+        Message.query.join(Conversation, Message.conversation_id == Conversation.id)
+        .filter(Conversation.user_id == user_id, Message.role == "user")
+        .order_by(Message.created_at.desc())
+        .limit(200)
+        .all()
+    )
+    matches = {}
+    for message in messages:
+        content = message.content.strip()
+        if not content or content.casefold() == query_text.casefold() or not _USER_DISCLOSURE.search(content):
+            continue
+        for sentence in _memory_sentences(content, terms, broad_recall):
+            words = {word.lower().strip(".,?!:;()[]{}\"'") for word in sentence.split()}
+            overlap = len(terms & words)
+            topic_match = _MEMORY_TOPIC.search(sentence)
+            topic = (
+                f"{topic_match.group(1).lower()} {topic_match.group(2).strip().lower()}"
+                if topic_match else sentence.casefold()
+            )
+            previous = matches.get(topic)
+            candidate = (overlap, message.created_at, sentence)
+            if previous is None or candidate[:2] > previous[:2]:
+                matches[topic] = candidate
+    ranked = sorted(matches.values(), key=lambda row: (row[0], row[1]), reverse=True)
+    return [f"You previously shared: {sentence[:300]}" for _, _, sentence in ranked[:limit]]
 
 
 def retrieve_personal_context(user_id, query, limit=6):

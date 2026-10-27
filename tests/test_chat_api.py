@@ -6,7 +6,7 @@ import pytest
 from app import create_app
 from config import Config
 from database.db import db
-from database.models import Scheme, SchemeSource, User
+from database.models import Notification, Scheme, SchemeSource, User, UserTask
 
 
 class TestConfig(Config):
@@ -206,7 +206,7 @@ def test_state_scheme_import_requires_a_real_state(client, app):
 
 
 def test_chat_uses_verified_evidence_and_never_sends_profile_data(client, app, monkeypatch):
-    _register(client)
+    user_id = _register(client).get_json()["user"]["id"]
     client.put(
         "/api/profile",
         json={"age": 20, "student_status": True, "annual_income": 123456, "state": "Karnataka"},
@@ -231,9 +231,197 @@ def test_chat_uses_verified_evidence_and_never_sends_profile_data(client, app, m
     assert result["disclaimer"]
     sent_prompt = str(captured["messages"])
     assert "123456" not in sent_prompt
-    assert "annual_income" not in sent_prompt
+    assert "annual_income" in sent_prompt
+    assert "Saved profile fields (names only; values remain private)" in sent_prompt
     # The exact values (age 20, income) are never sent, only which criteria were met.
     assert "(actual" not in sent_prompt
+    with app.app_context():
+        task = UserTask.query.filter_by(user_id=user_id, scheme_id=result["focus_scheme_ids"][0]).one()
+        assert task.title == "Apply for Sample State Education Scheme"
+        assert task.status == "PENDING"
+        notification = Notification.query.filter_by(
+            citizen_id=user_id, scheme_id=task.scheme_id, title="Scheme added to unfinished tasks"
+        ).one()
+        assert notification.notification_type == "TASK_REMINDER"
+        task_id = task.id
+
+    completed = client.post("/api/chat", json={
+        "message": "I finished applying for Sample State Education Scheme",
+        "conversation_id": result["conversation_id"],
+    })
+    assert completed.status_code == 200
+    assert "removed it from your unfinished tasks" in completed.get_json()["answer"]
+    with app.app_context():
+        task = db.session.get(UserTask, task_id)
+        assert task.status == "COMPLETED"
+        assert task.verified is True
+        notification = Notification.query.filter_by(
+            citizen_id=user_id, scheme_id=task.scheme_id, title="Scheme added to unfinished tasks"
+        ).one()
+        assert notification.is_read is True
+
+
+def test_combined_personal_disclosure_and_scholarship_search_runs_scheme_chat(client, app, monkeypatch):
+    _register(client)
+    _publish(app, _official_record(
+        name="Delhi Student Scholarship",
+        category="Scholarships",
+        jurisdiction="Delhi",
+        excerpt="Scholarship assistance for students aged 18 to 25.",
+    ))
+    captured = {}
+    _install_fake_openai(monkeypatch, captured)
+
+    response = client.post("/api/chat", json={"message": (
+        "I am a 21-year-old engineering student from Delhi. "
+        "My family's annual income is ₹2 lakh. I want to find scholarships."
+    )})
+
+    assert response.status_code == 200
+    result = response.get_json()
+    assert result["answer"] == "You qualify [S1]."
+    assert result["citations"]
+    assert result["remembered"]
+    assert "Reviewed evidence" in captured["messages"][1]["content"]
+
+
+def test_eligibility_answer_ignores_stale_assistant_income_after_profile_update(client, app, monkeypatch):
+    _register(client)
+    _publish(app, _official_record(
+        name="Delhi Income-Limited Scholarship",
+        category="Scholarships",
+        jurisdiction="Delhi",
+        excerpt="Applicants must have annual household income of 250000 or less.",
+        rule={
+            "logic": "AND",
+            "conditions": [{"field": "annual_income", "operator": "<=", "value": 250000}],
+        },
+    ))
+    captured = []
+
+    class FakeOpenAI:
+        def __init__(self, api_key):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            captured.append(kwargs)
+            answer = (
+                "Your family income of Rs. 200,000 may qualify [S1]."
+                if len(captured) == 1
+                else "Your updated income is above the listed limit [S1]."
+            )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=answer))]
+            )
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+
+    initial = client.post("/api/chat", json={"message": (
+        "I am a 21-year-old engineering student from Delhi. "
+        "My family's annual income is ₹2 lakh. I want to find scholarships."
+    )})
+    assert initial.status_code == 200
+    update = client.post("/api/chat", json={"message": "My family income is now ₹3 lakh. Update your memory."})
+    assert update.status_code == 200
+    assert client.get("/api/profile").get_json()["profile"]["annual_income"] == 300000
+
+    response = client.post("/api/chat", json={
+        "message": "Which scholarships can I apply for now?",
+        "conversation_id": initial.get_json()["conversation_id"],
+    })
+
+    assert response.status_code == 200
+    result = response.get_json()
+    assert result["eligibility"][0]["status"] == "NOT_ELIGIBLE"
+    latest_prompt = str(captured[-1]["messages"])
+    assert "200,000" not in latest_prompt
+    assert "200000" not in latest_prompt
+    assert "300,000" not in latest_prompt
+    assert "300000" not in latest_prompt
+    assert "Recent assistant replies (continuity only): []" in latest_prompt
+    assert "Saved profile fields (names only; values remain private)" in latest_prompt
+    assert "annual_income" in latest_prompt
+    assert "state" in latest_prompt
+    assert "do not ask for fields marked as saved" in captured[-1]["messages"][0]["content"]
+
+
+def test_additional_scheme_request_excludes_previously_cited_schemes(client, app, monkeypatch):
+    _register(client)
+    admin = _admin_client(app)
+    for name in (
+        "Delhi Student Scholarship One",
+        "Delhi Student Scholarship Two",
+        "Delhi Student Scholarship Three",
+        "Delhi Student Scholarship Four",
+    ):
+        imported = admin.post("/api/admin/sources/import", json={
+            "records": [_official_record(name=name, category="Scholarships", government_level="CENTRAL",
+                                         jurisdiction="India")]
+        }).get_json()
+        source_id = imported["sources"][0]["id"]
+        assert admin.post(
+            f"/api/admin/sources/{source_id}/review", json={"status": "VERIFIED"}
+        ).status_code == 200
+
+    responses = []
+
+    class FakeOpenAI:
+        def __init__(self, api_key):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            responses.append(kwargs)
+            answer = (
+                "The first three are [S1], [S2], and [S3]."
+                if len(responses) == 1
+                else "Here is another option [S4]."
+            )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=answer))]
+            )
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+
+    first = client.post("/api/chat", json={"message": "Which schemes can I apply for?"})
+    assert first.status_code == 200
+    first_result = first.get_json()
+    first_names = {citation["scheme"] for citation in first_result["citations"]}
+    assert len(first_names) == 3
+
+    followup = client.post("/api/chat", json={
+        "message": "Find additional scholarships; don't repeat the schemes you already listed.",
+        "conversation_id": first_result["conversation_id"],
+    })
+    assert followup.status_code == 200
+    followup_result = followup.get_json()
+    followup_names = {citation["scheme"] for citation in followup_result["citations"]}
+    assert followup_names
+    assert first_names.isdisjoint(followup_names)
+
+
+def test_scholarship_search_with_previous_knowledge_phrase_is_not_misrouted_to_recall(client, app, monkeypatch):
+    _register(client)
+    _publish(app, _official_record(
+        name="Delhi Engineering Merit Scholarship",
+        category="Scholarships",
+        government_level="CENTRAL",
+        jurisdiction="India",
+        excerpt="Scholarship for engineering students with academic merit.",
+    ))
+    captured = {}
+    _install_fake_openai(monkeypatch, captured)
+
+    response = client.post("/api/chat", json={"message": (
+        "I study at Delhi Technological University and scored 82%. "
+        "Suggest scholarships according to my college, marks and previous knowledge."
+    )})
+
+    assert response.status_code == 200
+    result = response.get_json()
+    assert result["citations"]
+    assert "Here is what I found in your saved history" not in result["answer"]
+    assert "Reviewed evidence" in captured["messages"][1]["content"]
+    assert "Relevant personal memory (user statements, for continuity only): []" in captured["messages"][1]["content"]
 
 
 def test_state_scheme_is_not_eligible_for_residents_of_another_state(client, app, monkeypatch):
@@ -290,4 +478,4 @@ def test_profile_rejects_invalid_types_and_chat_rejects_oversized_messages(clien
 def test_home_page_serves_chat_interface(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert b"Ask about schemes" in response.data
+    assert b"Memory Agent" in response.data
